@@ -142,7 +142,7 @@ for METHOD in ['none', 'centering-scaling', 'rf-da']:
             X_adapted = gc_correction(X, gc_content)
             side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
             X_adapted[idx1] = ot_da(
-                ichor_cna_location, folder, gc_codes[idx1], X[idx1], X_adapted[idx2], side_info
+                folder, X[idx1], X_adapted[idx2], side_info
             )
         elif METHOD == 'gc-correction':
             X_adapted = gc_correction(X, gc_content)

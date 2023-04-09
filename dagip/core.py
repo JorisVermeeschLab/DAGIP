@@ -23,20 +23,15 @@ import os.path
 from typing import Tuple, List, Union
 
 import numpy as np
-import scipy.stats
 import ot
+import scipy.stats
 import torch
 import tqdm
 from matplotlib import pyplot as plt
 from scipy.spatial.distance import cdist
-from scipy.stats import ranksums
-from statsmodels.nonparametric.smoothers_lowess import lowess
 
-from dagip.correction.gc import gc_correction
-from dagip.ichorcna.model import IchorCNA
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.nn.gc_correction import diff_gc_correction
-from dagip.tools.ichor_cna import create_ichor_cna_normal_panel, load_ichor_cna_results, ichor_cna
 from dagip.utils import log_
 
 
@@ -120,16 +115,6 @@ def define_target(
     return out
 
 
-def median_and_rmsd(X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    n_bins = X.size()[1]
-    median = torch.median(X, dim=0).values
-    # rmsd = torch.sqrt(torch.mean((X - median.unsqueeze(0)) ** 2, dim=0)) + 1e-7
-    rmsd = torch.std(X, dim=0) + 1e-7
-    assert median.size() == (n_bins,)
-    assert rmsd.size() == (n_bins,)
-    return median, rmsd
-
-
 def follow_same_distribution(X1: np.ndarray, X2: np.ndarray) -> bool:
     p_values = compute_p_values(X1, X2)
     print(np.median(p_values))
@@ -140,28 +125,30 @@ def compute_p_values(X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
     return np.asarray([scipy.stats.ranksums(X1[:, k], X2[:, k]).pvalue for k in range(X1.shape[1])])
 
 
+def standardization(X: torch.Tensor, mu: torch.Tensor, ddof: int = 0, eps: float = 1e-5) -> torch.Tensor:
+    n = len(X)
+    mu = mu.unsqueeze(0)
+    var = torch.sum(torch.square(X - mu), dim=0) / (n - ddof)
+    var = torch.clamp(var.unsqueeze(0), eps)
+    std = torch.sqrt(var)
+    return (X - mu) / std
+
+
 def ot_da(
-        ichor_cna_location: str,
         folder: str,
-        sample_names: List[str],
         X1: np.ndarray,
         X2: np.ndarray,
         side_info: np.ndarray,
-        t_max: int = 5,
-        p: int = 1,
         max_n_iter: int = 200,  # 1000
-        positive: bool = True,
         convergence_threshold: float = 0.5,
-        reg_rate: float = 0.5
+        reg_rate: float = 1.0
 ) -> np.ndarray:
 
     gc_content = torch.FloatTensor((np.round(side_info[:, 0] * 1000).astype(int) // 10).astype(float))
 
     with torch.no_grad():
         X1_corrected = diff_gc_correction(torch.FloatTensor(X1), gc_content)
-        r1, std = median_and_rmsd(X1_corrected)
-        target_diffs = torch.distributions.Normal(r1, std).cdf(X1_corrected)
-        # target_diffs = torch.FloatTensor(X1) - r1.unsqueeze(0)
+        target_diffs = standardization(X1_corrected, torch.median(X1_corrected, dim=0).values)
 
     check_every = 1
 
@@ -190,13 +177,14 @@ def ot_da(
 
         X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
 
-        r1_adapted, std = median_and_rmsd(torch.cat((X1_corrected, torch.FloatTensor(X2)), dim=0))
-        # r1_adapted, std = median_and_rmsd(X1_adapted)
-        diffs = torch.distributions.Normal(r1_adapted, std).cdf(X1_corrected)
-        # diffs = X1_adapted - r1_adapted.unsqueeze(0)
+        diffs = standardization(
+            X1_corrected,
+            torch.median(torch.cat((X1_corrected, torch.FloatTensor(X2)), dim=0), dim=0).values
+        )
 
         loss = torch.mean((X1_corrected - X2_prime) ** 2)
         reg = reg_rate * torch.mean((diffs - target_diffs) ** 2)
+        print(loss.item(), reg.item())
         (speed * (loss + reg)).backward()
         optimizer.step()
         with torch.no_grad():

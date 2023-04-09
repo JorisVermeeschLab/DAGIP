@@ -18,7 +18,8 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
-from typing import Tuple
+
+from typing import Tuple, Optional
 
 import numpy as np
 import torch
@@ -26,6 +27,8 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 
 
 class Lowess(torch.autograd.Function):
+
+    GRAD_GC: Optional[torch.Tensor] = None
 
     @staticmethod
     def forward(
@@ -38,20 +41,32 @@ class Lowess(torch.autograd.Function):
         out = torch.clone(endog)
         for i in range(len(endog)):
             out[i, :] = torch.FloatTensor(lowess(
-                endog[i, :].cpu().data.numpy(), exog.cpu().data.numpy(), frac=frac, return_sorted=False
+                endog[i, :].cpu().data.numpy(),
+                exog.cpu().data.numpy(),
+                frac=frac,
+                return_sorted=False
             ))
 
-        ctx.save_for_backward(endog, exog)
+        ctx.save_for_backward(exog)
 
         return out
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
 
-        Y, x = ctx.saved_tensors
-        m, n = Y.size()
+        x = ctx.saved_tensors
 
-        grad_input = torch.clone(grad_output)
+        if (Lowess.GRAD_GC is None) or (len(Lowess.GRAD_GC) != len(x)):
+            Lowess.store_grad_gc(x.cpu().data.numpy())
+
+        grad_input = grad_output * Lowess.GRAD_GC.unsqueeze(0)
+
+        return grad_input, None, None
+
+    @staticmethod
+    def store_grad_gc(x: np.ndarray):
+        n = len(x)
+        grad_gc = np.zeros(n)
         for i in range(n):
             w = np.abs(x - x[i])
             x_bar = np.average(x, weights=w)
@@ -61,9 +76,8 @@ class Lowess(torch.autograd.Function):
             denominator = np.average((x - x_bar) ** 2, weights=w)
             grad_a = numerator / denominator
 
-            grad_input[:, i] *= ((x[i] - x_bar) * grad_a + 1. / n)
-
-        return grad_input, None, None
+            grad_gc[i] = ((x[i] - x_bar) * grad_a + 1. / n)
+        Lowess.GRAD_GC = torch.FloatTensor(grad_gc)
 
 
 def diff_gc_correction(X: torch.Tensor, exog: torch.Tensor, frac: float = 0.3) -> torch.Tensor:

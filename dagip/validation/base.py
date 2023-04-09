@@ -135,11 +135,6 @@ class CrossValidation(metaclass=ABCMeta):
         X_test = X_test[six_test, :]
         y_test = y_test[six_test]
 
-        # Convert 10kb bins to 1mb bins
-        if self.redo_binning:
-            X_train = ChromosomeBounds.bin_from_10kb_to_1mb(X_train)
-            X_test = ChromosomeBounds.bin_from_10kb_to_1mb(X_test)
-
         # Remove low-mappability bins
         mappability = self.side_info[1, :]
         mask = (mappability >= 0.8)

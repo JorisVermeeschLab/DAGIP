@@ -164,21 +164,6 @@ if DATASET == 'OV':
             j = gc_code_dict[elements[1]]
             idx1.append(i)
             idx2.append(j)
-elif DATASET == 'NIPT':
-
-    bar_codes = set([gc_code.split('-')[1] for gc_code in gc_codes])
-
-    for pool_id1, pool_id2 in NIPT_SUB_DOMAIN_POOL_IDS[NIPT_SUB_DOMAIN]:
-        for bar_code in bar_codes:
-            gc_code1 = f'{pool_id1}-{bar_code}'
-            gc_code2 = f'{pool_id2}-{bar_code}'
-            if (gc_code1 in gc_code_dict) and (gc_code2 in gc_code_dict):
-                i = gc_code_dict[gc_code1]
-                j = gc_code_dict[gc_code2]
-                idx1.append(i)
-                idx2.append(j)
-    idx1 = np.asarray(idx1)
-    idx2 = np.asarray(idx2)
 elif DATASET == 'NIPT-lib':
     nipt_mapping = {}
     with open(os.path.join(DATA_FOLDER, 'nano-vs-kapa.tsv'), 'r') as f:
@@ -233,6 +218,14 @@ chrids = np.round(ChromosomeBounds.bin_from_10kb_to_1mb(chrids)).astype(int)
 centromeric = (ChromosomeBounds.bin_from_10kb_to_1mb(centromeric) > 0)
 X = ChromosomeBounds.bin_from_10kb_to_1mb(X)
 
+X = gc_correction(X, gc_content)
+X[idx1] = RobustScaler().fit_transform(X[idx1])
+X[idx2] = RobustScaler().fit_transform(X[idx2])
+
+for i, j in zip(idx1, idx2):
+    plt.plot(X[i] - X[j], color='blue', linewidth=0.5, alpha=0.4)
+plt.show()
+
 # Shuffle data
 if SHUFFLE:
     six = np.arange(len(idx2))
@@ -244,9 +237,8 @@ if METHOD == 'rf-da':
     side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
     folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted[idx1] = ot_da(
-        ichor_cna_location, folder, gc_codes[idx1], X[idx1], X_adapted[idx2], side_info,
+        folder, X[idx1], X_adapted[idx2], side_info,
         convergence_threshold=1.0,
-        reg_rate=0,
         max_n_iter=100
     )
 elif METHOD == 'gc-correction':

@@ -89,7 +89,7 @@ def process(METHOD):
         folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'NIPT')
         X_adapted = gc_correction(X, gc_content)
         side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
-        X_adapted[idx1] = ot_da(ichor_cna_location, folder, gc_codes[idx1], X_adapted[idx1], X_adapted[idx2], side_info)
+        X_adapted[idx1] = ot_da(folder, X_adapted[idx1], X_adapted[idx2], side_info)
     elif METHOD == 'rf':
         side_info = np.asarray([gc_content, mappability]).T
         X_adapted = np.copy(X)

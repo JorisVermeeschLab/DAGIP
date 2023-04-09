@@ -20,7 +20,7 @@
 #  MA 02110-1301, USA.
 
 import numpy as np
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 
 from dagip.benchmark.base import BaseMethod
 
@@ -42,14 +42,14 @@ class CenteringScaling(BaseMethod):
             sample_names: np.ndarray,
             target_domain: int = 0
     ):
-        target_scaler = StandardScaler(with_std=self.with_std)
+        target_scaler = RobustScaler(with_scaling=self.with_std)
         target_scaler.fit(X[d == target_domain])
 
         X_adapted = np.copy(X)
         for domain in np.unique(d):
             if domain != target_domain:
                 mask = (d == domain)
-                X_adapted[mask, :] = StandardScaler(with_std=self.with_std).fit_transform(X_adapted[mask, :])
+                X_adapted[mask, :] = RobustScaler(with_scaling=self.with_std).fit_transform(X_adapted[mask, :])
                 X_adapted[mask, :] = target_scaler.inverse_transform(X_adapted[mask, :])
         return X_adapted
 

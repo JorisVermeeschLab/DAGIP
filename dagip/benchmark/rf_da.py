@@ -107,7 +107,7 @@ class RFDomainAdaptation(BaseMethod):
         folder = os.path.join(self.folder, str(uuid.uuid4()))
         if not os.path.isdir(folder):
             os.makedirs(folder)
-        return ot_da(self.ichor_cna_location, folder, list(sample_names), X1, X2, side_info)
+        return ot_da(folder, X1, X2, side_info)
 
     def adapt_sample_wise(
             self,
