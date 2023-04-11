@@ -1,23 +1,23 @@
 import os
-import random
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 
 from dagip.core import ot_da
 from dagip.correction.gc import gc_correction
-from dagip.ichorcna.metrics import ploidy_accuracy, cna_accuracy, sov_refine, absolute_error, sign_accuracy
+from dagip.ichorcna.metrics import ploidy_accuracy, cna_accuracy, sov_refine, absolute_error
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.tools.ichor_cna import ichor_cna, create_ichor_cna_normal_panel, load_ichor_cna_results
+
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 
 CORRECTION = True
-INPLACE = False
-REFERENCE_FREE = True
+REFERENCE_FREE = False
+BACKWARD = True
 
 
 # Load reference GC content and mappability
@@ -79,16 +79,11 @@ centromeric = (ChromosomeBounds.bin_from_10kb_to_1mb(centromeric) > 0)
 
 # Create normal panel using samples from domain 1
 ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
-if INPLACE:
-    folder = os.path.join(ROOT, 'ichor-cna-results', f'domain-1', 'ov-inplace', 'normal-panel')
-else:
-    folder = os.path.join(ROOT, 'ichor-cna-results', f'domain-1', 'ov', 'normal-panel')
+folder = os.path.join(ROOT, 'ichor-cna-results', f'domain-1',
+                      'ov-backward' if BACKWARD else 'ov-forward', 'normal-panel')
 normal_panel_filepath = os.path.join(folder, 'normal-panel_median.rds')
 if not os.path.exists(normal_panel_filepath):
-    if INPLACE:
-        idx = np.where(np.logical_and(y == 1, d == 1))[0]
-    else:
-        idx = np.where(np.logical_and(y == 0, d == 1))[0]
+    idx = np.where(np.logical_and(y == 0, d == 1))[0]
     create_ichor_cna_normal_panel(ichor_cna_location, folder, X[idx, :], gc_content, mappability)
 
 # Call CNAs in cancer samples from domain 1
@@ -97,7 +92,7 @@ for i in np.where(np.logical_and(y == 1, d == 1))[0]:
     folder = os.path.join(
         'ichor-cna-results',
         'domain-1' if (not REFERENCE_FREE) else 'domain-1-noref',
-        'ov-inplace' if INPLACE else 'ov',
+        'ov-backward' if BACKWARD else 'ov-forward',
         gc_codes[i]
     )
     results = load_ichor_cna_results(folder)
@@ -148,9 +143,9 @@ for METHOD in ['none', 'centering-scaling', 'rf-da']:
             X_adapted = gc_correction(X, gc_content)
         elif METHOD == 'centering-scaling':
             X_adapted = np.copy(X)
-            scaler2 = StandardScaler(with_mean=False)
+            scaler2 = RobustScaler(with_centering=False)
             scaler2.fit(X[idx2])
-            X_adapted[idx1, :] = np.maximum(0, scaler2.inverse_transform(StandardScaler().fit_transform(X[idx1])))
+            X_adapted[idx1, :] = np.maximum(0, scaler2.inverse_transform(RobustScaler(with_centering=False).fit_transform(X[idx1])))
         elif METHOD == 'none':
             X_adapted = X
         else:
@@ -164,15 +159,12 @@ for METHOD in ['none', 'centering-scaling', 'rf-da']:
         ROOT,
         'ichor-cna-results',
         METHOD if (not REFERENCE_FREE) else f'{METHOD}-noref',
-        'ov-inplace' if INPLACE else 'ov',
+        'ov-backward' if BACKWARD else 'ov-forward',
         'normal-panel'
     )
     normal_panel_filepath = os.path.join(folder, 'normal-panel_median.rds')
     if not os.path.exists(normal_panel_filepath):
-        if INPLACE:
-            idx = np.where(np.logical_and(y == 1, d == 1))[0]
-        else:
-            idx = np.where(np.logical_and(y == 0, d == 0))[0]
+        idx = np.where(np.logical_and(y == 0, d == 0))[0]
         create_ichor_cna_normal_panel(
             ichor_cna_location,
             folder,
@@ -192,7 +184,7 @@ for METHOD in ['none', 'centering-scaling', 'rf-da']:
         folder = os.path.join(
             'ichor-cna-results',
             METHOD if (not REFERENCE_FREE) else f'{METHOD}-noref',
-            'ov-inplace',
+            'ov-backward' if BACKWARD else 'ov-forward',
             gc_codes[i]
         )
         results = load_ichor_cna_results(folder)
@@ -258,7 +250,7 @@ def cn_state_to_color(state):
         return 'white', 0
 
 # Initialize circos sectors
-from pycirclize import Circos, circos
+from pycirclize import Circos
 
 bounds = ChromosomeBounds.get_1mb()
 

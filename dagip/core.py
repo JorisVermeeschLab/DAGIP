@@ -29,6 +29,7 @@ import torch
 import tqdm
 from matplotlib import pyplot as plt
 from scipy.spatial.distance import cdist
+from sklearn.decomposition import KernelPCA
 
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.nn.gc_correction import diff_gc_correction
@@ -45,7 +46,7 @@ def wasserstein_distance(
     m = len(X2)
     a = np.full(n, 1. / n)
     b = np.full(m, 1. / m)
-    distances = cdist(X1, X2)
+    distances = cdist(X1, X2, metric='cityblock')
     gamma = ot.emd(a, b, distances ** p)
     distance = np.sum(gamma * distances) ** (1. / p)
     if return_plan:
@@ -58,7 +59,7 @@ def pairwise_distances(
         X1: np.ndarray,
         X2: np.ndarray,
 ) -> np.ndarray:
-    distances = cdist(X1, X2)
+    distances = cdist(X1, X2, metric='cityblock')
     distances /= np.outer(np.mean(distances, axis=1), np.mean(distances, axis=0))
     return distances
 
@@ -72,7 +73,6 @@ def ot_mapping(
     m = len(X2)
     a = np.full(n, 1. / n)
     b = np.full(m, 1. / m)
-    # distances = cdist(X1, X2)
     assert not np.any(np.isnan(X1))
     assert not np.any(np.isnan(X2))
     distances = pairwise_distances(X1, X2)
@@ -84,34 +84,23 @@ def ot_mapping(
     return np.dot(gamma, X2)
 
 
-def quantile_transform(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
-    inv_idx1 = np.argsort(np.argsort(x1))
-    idx2 = np.argsort(x2)
-    return x2[idx2[inv_idx1]]
-
-
-def define_target_(
-        x1: np.ndarray,
-        x2_prime: np.ndarray
+def piecewise_ot_mapping(
+        X1: np.ndarray,
+        X2: np.ndarray,
+        p: int = 2
 ) -> np.ndarray:
-    out = np.zeros(len(x2_prime))
-    bounds = ChromosomeBounds.get_bounds(len(x1))
+    n = len(X1)
+    m = len(X2)
+    a = np.full(n, 1. / n)
+    b = np.full(m, 1. / m)
+    out = np.zeros(X1.shape)
+    bounds = ChromosomeBounds.get_bounds(X1.shape[1])
     for i in range(len(bounds) - 1):
         start, end = bounds[i], bounds[i + 1]
-        out[start:end] = quantile_transform(
-            x1[start:end],
-            x2_prime[start:end]
-        )
-    return out
-
-
-def define_target(
-        X1: np.ndarray,
-        X2_prime: np.ndarray
-) -> np.ndarray:
-    out = np.zeros(X2_prime.shape)
-    for i in range(len(X2_prime)):
-        out[i, :] = define_target_(X1[i, :], X2_prime[i, :])
+        distances = pairwise_distances(X1[:, start:end], X2[:, start:end])
+        gamma = ot.emd(a, b, distances ** p)
+        gamma /= np.sum(gamma, axis=1)[:, np.newaxis]
+        out[:, start:end] = np.dot(gamma, X2[:, start:end])
     return out
 
 
@@ -122,16 +111,17 @@ def follow_same_distribution(X1: np.ndarray, X2: np.ndarray) -> bool:
 
 
 def compute_p_values(X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
-    return np.asarray([scipy.stats.ranksums(X1[:, k], X2[:, k]).pvalue for k in range(X1.shape[1])])
+    return np.asarray([scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X1.shape[1])])
 
 
 def standardization(X: torch.Tensor, mu: torch.Tensor, ddof: int = 0, eps: float = 1e-5) -> torch.Tensor:
     n = len(X)
     mu = mu.unsqueeze(0)
-    var = torch.sum(torch.square(X - mu), dim=0) / (n - ddof)
-    var = torch.clamp(var.unsqueeze(0), eps)
-    std = torch.sqrt(var)
-    return (X - mu) / std
+    #var = torch.sum(torch.square(X - mu), dim=0) / (n - ddof)
+    #var = torch.clamp(var.unsqueeze(0), eps)
+    #std = torch.sqrt(var)
+    #return (X - mu) / std
+    return X - mu
 
 
 def ot_da(
@@ -139,7 +129,7 @@ def ot_da(
         X1: np.ndarray,
         X2: np.ndarray,
         side_info: np.ndarray,
-        max_n_iter: int = 200,  # 1000
+        max_n_iter: int = 1000,  # 1000
         convergence_threshold: float = 0.5,
         reg_rate: float = 1.0
 ) -> np.ndarray:
@@ -150,15 +140,15 @@ def ot_da(
         X1_corrected = diff_gc_correction(torch.FloatTensor(X1), gc_content)
         target_diffs = standardization(X1_corrected, torch.median(X1_corrected, dim=0).values)
 
-    check_every = 1
+    check_every = 50
 
     X1_adapted = torch.nn.Parameter(torch.FloatTensor(np.copy(X1)))
+    X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
 
-    X1 = torch.FloatTensor(X1)
-    optimizer = torch.optim.Adam([X1_adapted], lr=1e-3)  # 1e-3
+    optimizer = torch.optim.Adam([X1_adapted], lr=1e-2)  # 1e-3
 
     # Determine convergence criterion
-    p_values = compute_p_values(X1.cpu().data.numpy(), X2)
+    p_values = compute_p_values(X1, X2)
     median_p_value = np.median(p_values)
     log_(f'Median p-value: {median_p_value}')
     if median_p_value >= convergence_threshold:
@@ -173,9 +163,18 @@ def ot_da(
 
         optimizer.zero_grad()
 
+        # GC correction
         X1_corrected = diff_gc_correction(X1_adapted, gc_content)
 
-        X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+        # Define targets
+        # X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))  # TODO
+        if iteration % 10 == 0:
+            X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+
+        # Compensate the reduction of variance caused by the OT mapping
+        scale = torch.mean(torch.std(torch.FloatTensor(X2), dim=0)) / torch.mean(torch.std(X2_prime, dim=0))
+        mu = torch.median(X2_prime, dim=0).values.unsqueeze(0)
+        X2_prime = scale * (X2_prime - mu) + mu
 
         diffs = standardization(
             X1_corrected,
@@ -193,9 +192,9 @@ def ot_da(
 
         # Update speed
         if (loss + reg).item() < last:
-            speed *= 1.1
+            speed *= 1.02
         else:
-            speed *= 0.9
+            speed *= 0.98
         speed = float(np.clip(speed, 0.1, 10))
         last = (loss + reg).item()
 
@@ -204,10 +203,10 @@ def ot_da(
         # print((loss + reg).item(), loss.item(), reg.item(), len(X1), len(X2))
 
         # Check convergence
-        if (iteration % check_every == 0):
+        if iteration % check_every == 0:
             p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2)
             median_p_values.append(np.median(p_values))
-            # print('threshold', np.median(p_values), convergence_threshold)
+            print('threshold', np.median(p_values), convergence_threshold)
             if np.median(p_values) >= convergence_threshold:
                 break
 
@@ -222,6 +221,7 @@ def ot_da(
     if not os.path.isdir(folder):
         os.makedirs(folder)
     p_values = compute_p_values(X1_corrected, X2)
+    log_(f'Median p-value after correction: {np.median(p_values)}')
     plt.subplot(2, 1, 1)
     plt.violinplot(p_values, vert=False, showmeans=True, showextrema=True)
     plt.xlabel('Wilcoxon rank-sum p-value')
@@ -262,6 +262,22 @@ def ot_da(
     plt.clf()
     plt.imshow(gamma)
     plt.savefig(os.path.join(folder, 'transport-plan.png'), dpi=300)
+    plt.clf()
+    plt.subplot(1, 2, 1)
+    pca = KernelPCA()
+    pca.fit(X1)
+    coords = pca.transform(X1)
+    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+    coords = pca.transform(X2)
+    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+    plt.subplot(1, 2, 2)
+    pca = KernelPCA()
+    pca.fit(X1_corrected)
+    coords = pca.transform(X1_corrected)
+    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+    coords = pca.transform(X2)
+    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+    plt.savefig(os.path.join(folder, 'kpca.png'), dpi=300)
     plt.clf()
 
     return X1_corrected

@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 
 METHOD = 'rf-da'
-DATASET = 'DLBCL'
+DATASET = 'MM'
 
 # Load reference GC content and mappability
 mappability = np.load(os.path.join(DATA_FOLDER, 'mappability.npy'))
@@ -134,19 +134,12 @@ mappability = ChromosomeBounds.bin_from_10kb_to_1mb(mappability)
 chrids = np.round(ChromosomeBounds.bin_from_10kb_to_1mb(chrids)).astype(int)
 centromeric = (ChromosomeBounds.bin_from_10kb_to_1mb(centromeric) > 0)
 
-mask = (mappability > 0.8)
-X = X[:, mask]
-gc_content = gc_content[mask]
-mappability = mappability[mask]
-chrids = chrids[mask]
-centromeric = centromeric[mask]
-
 print(gc_content.shape, mappability.shape)
 side_info = np.asarray([gc_content, mappability, centromeric, chrids])
 
 validation = KFoldValidation(
     X, y, d, t, side_info, gc_codes,
-    target_domain=0, redo_binning=False, average_results=False, n_splits=10, groups=groups
+    target_domain=0, redo_binning=False, average_results=False, n_splits=5, groups=groups
 )
 # validation = LoncoValidation(X, y, d, t, side_info, gc_codes, target_domain=0)
 # validation = TrainTestValidation(X, y, d, t, side_info, gc_codes, target_domain=0, redo_binning=False)

@@ -18,7 +18,7 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
-
+import random
 from typing import Tuple, Optional
 
 import numpy as np
@@ -54,7 +54,7 @@ class Lowess(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
 
-        x = ctx.saved_tensors
+        x, = ctx.saved_tensors
 
         if (Lowess.GRAD_GC is None) or (len(Lowess.GRAD_GC) != len(x)):
             Lowess.store_grad_gc(x.cpu().data.numpy())
