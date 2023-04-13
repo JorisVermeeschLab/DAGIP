@@ -114,14 +114,8 @@ def compute_p_values(X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
     return np.asarray([scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X1.shape[1])])
 
 
-def standardization(X: torch.Tensor, mu: torch.Tensor, ddof: int = 0, eps: float = 1e-5) -> torch.Tensor:
-    n = len(X)
-    mu = mu.unsqueeze(0)
-    #var = torch.sum(torch.square(X - mu), dim=0) / (n - ddof)
-    #var = torch.clamp(var.unsqueeze(0), eps)
-    #std = torch.sqrt(var)
-    #return (X - mu) / std
-    return X - mu
+def standardization(X: torch.Tensor, mu: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    return scale * (X - mu)
 
 
 def ot_da(
@@ -131,21 +125,28 @@ def ot_da(
         side_info: np.ndarray,
         max_n_iter: int = 1000,  # 1000
         convergence_threshold: float = 0.5,
-        reg_rate: float = 1.0
 ) -> np.ndarray:
+
+    reg_rate = 1000
+
+    scale = torch.FloatTensor(1. / np.maximum(np.std(X2, axis=0), 1e-3)[np.newaxis, :])
 
     gc_content = torch.FloatTensor((np.round(side_info[:, 0] * 1000).astype(int) // 10).astype(float))
 
     with torch.no_grad():
         X1_corrected = diff_gc_correction(torch.FloatTensor(X1), gc_content)
-        target_diffs = standardization(X1_corrected, torch.median(X1_corrected, dim=0).values)
-
-    check_every = 50
+        target_diffs_1 = standardization(
+            X1_corrected, torch.median(X1_corrected, dim=0).values.unsqueeze(0), scale
+        )
+        target_diffs_2 = standardization(
+            torch.FloatTensor(X2), torch.median(torch.FloatTensor(X2), dim=0).values.unsqueeze(0), scale
+        )
 
     X1_adapted = torch.nn.Parameter(torch.FloatTensor(np.copy(X1)))
-    X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+    # X2_prime = torch.FloatTensor(ot_mapping((X1_corrected).cpu().data.numpy(), X2))
+    X2_prime = torch.FloatTensor(piecewise_ot_mapping((X1_corrected).cpu().data.numpy(), X2))  # TODO
 
-    optimizer = torch.optim.Adam([X1_adapted], lr=1e-2)  # 1e-3
+    optimizer = torch.optim.Adam([X1_adapted], lr=1e-3)  # 1e-3
 
     # Determine convergence criterion
     p_values = compute_p_values(X1, X2)
@@ -167,24 +168,27 @@ def ot_da(
         X1_corrected = diff_gc_correction(X1_adapted, gc_content)
 
         # Define targets
-        # X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))  # TODO
         if iteration % 10 == 0:
-            X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+            # X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+            X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))  # TODO
 
         # Compensate the reduction of variance caused by the OT mapping
-        scale = torch.mean(torch.std(torch.FloatTensor(X2), dim=0)) / torch.mean(torch.std(X2_prime, dim=0))
+        factor = torch.mean(torch.std(torch.FloatTensor(X2), dim=0)) / torch.mean(torch.std(X2_prime, dim=0))
         mu = torch.median(X2_prime, dim=0).values.unsqueeze(0)
-        X2_prime = scale * (X2_prime - mu) + mu
+        X2_prime = factor * (X2_prime - mu) + mu
 
-        diffs = standardization(
-            X1_corrected,
-            torch.median(torch.cat((X1_corrected, torch.FloatTensor(X2)), dim=0), dim=0).values
-        )
+        # Wasserstein distance
+        loss = torch.mean((scale * (X1_corrected - X2_prime)) ** 2)
 
-        loss = torch.mean((X1_corrected - X2_prime) ** 2)
-        reg = reg_rate * torch.mean((diffs - target_diffs) ** 2)
+        # Regularization function
+        mu = torch.median(torch.cat((X1_corrected, torch.FloatTensor(X2)), dim=0), dim=0).values.unsqueeze(0)
+        diffs = standardization(X1_corrected, mu, scale)
+        reg = 0.5 * torch.mean((diffs - target_diffs_1) ** 2)
+        diffs = standardization(torch.FloatTensor(X2), mu, scale)
+        reg = reg + 0.5 * torch.mean((diffs - target_diffs_2) ** 2)
         print(loss.item(), reg.item())
-        (speed * (loss + reg)).backward()
+        total_loss = (speed * (1 / (reg_rate + 1) * loss + reg_rate / (reg_rate + 1) * reg))
+        total_loss.backward()
         optimizer.step()
         with torch.no_grad():
             X1_adapted.data = torch.clamp(X1_adapted.data, 0)
@@ -194,21 +198,23 @@ def ot_da(
         if (loss + reg).item() < last:
             speed *= 1.02
         else:
-            speed *= 0.98
+            speed *= 0.95
         speed = float(np.clip(speed, 0.1, 10))
-        last = (loss + reg).item()
+        last = (loss + reg_rate * reg).item()
 
         losses.append([loss.item(), reg.item()])
         # print(last, losses[-1])
         # print((loss + reg).item(), loss.item(), reg.item(), len(X1), len(X2))
 
         # Check convergence
-        if iteration % check_every == 0:
-            p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2)
-            median_p_values.append(np.median(p_values))
-            print('threshold', np.median(p_values), convergence_threshold)
-            if np.median(p_values) >= convergence_threshold:
-                break
+        p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2)
+        median_p_values.append(np.median(p_values))
+        print('threshold', np.median(p_values), convergence_threshold)
+        if np.median(p_values) >= convergence_threshold:
+            break
+
+        if (iteration > 20) and (iteration % 10 == 0):
+            reg_rate *= 0.5
 
     losses = np.asarray(losses)
 

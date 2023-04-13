@@ -1,25 +1,31 @@
+import argparse
 import os
 
 import numpy as np
 import pandas as pd
-from matplotlib import pyplot as plt
-from sklearn.preprocessing import RobustScaler
-from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from dagip.benchmark.baseline import BaselineMethod
 from dagip.benchmark.centering_scaling import CenteringScaling
 from dagip.benchmark.gc_correction import GCCorrection
 from dagip.benchmark.rf_da import RFDomainAdaptation
-from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.validation.k_fold import KFoldValidation
-from dagip.validation.train_test import TrainTestValidation
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 
-METHOD = 'rf-da'
-DATASET = 'MM'
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    'dataset',
+    type=str,
+    choices=[
+        'HL', 'DLBCL', 'MM', 'OV-forward', 'OV-backward'
+    ],
+    help='Dataset name'
+)
+args = parser.parse_args()
+
+DATASET = args.dataset
 
 # Load reference GC content and mappability
 mappability = np.load(os.path.join(DATA_FOLDER, 'mappability.npy'))
@@ -49,7 +55,7 @@ for line in lines:
     if len(elements) > 1:
         annotations[elements[0]] = elements[2]
 
-if DATASET == 'OV':
+if DATASET in {'OV-forward', 'OV-backward'}:
     data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
 else:
     data = np.load(os.path.join(DATA_FOLDER, 'hema.npz'), allow_pickle=True)
@@ -83,7 +89,7 @@ assert len(gc_codes) == len(set(gc_codes))
 X /= np.median(X, axis=1)[:, np.newaxis]
 
 t, y, d = [], [], []
-if DATASET == 'OV':
+if DATASET in {'OV-forward', 'OV-backward'}:
 
     gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
     with open(os.path.join(DATA_FOLDER, 'control-and-ov-pairs.txt'), 'r') as f:
@@ -107,7 +113,10 @@ if DATASET == 'OV':
             t.append(f'{indexes}-{sequencer}')
         else:
             t.append('external')
-        d.append(gc_code.startswith('GC'))
+        if DATASET == 'OV-forward':
+            d.append(gc_code.startswith('GC'))
+        else:
+            d.append(not gc_code.startswith('GC'))
         y.append(label != 'control')
         if (gc_code in mapping) and (mapping[gc_code] in groups):
             groups[gc_code] = groups[mapping[gc_code]]

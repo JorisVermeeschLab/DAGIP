@@ -15,6 +15,7 @@ from dagip.core import ot_da
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.stats.bounds import compute_theoretical_bounds
+from dagip.stats.r2 import r2_coefficient
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
@@ -170,10 +171,9 @@ if SHUFFLE:
 D = cdist(X_adapted[idx1], X_adapted[idx2])
 D_old = cdist(X[idx1, :], X[idx2, :])
 
-ss_res = np.sum((X_adapted[idx1] - X_adapted[idx2]) ** 2.)
-ss_tot = np.sum((X_adapted[idx2] - np.mean(X_adapted[idx2], axis=0)[np.newaxis, :]) ** 2.)
-r2 = 1. - ss_res / ss_tot
+r2 = r2_coefficient(X_adapted[idx1], X_adapted[idx2])
 
+"""
 xs, ys, zs, pvalues = [], [], [], []
 for j in range(X.shape[1]):
     try:
@@ -189,6 +189,7 @@ mask = np.logical_and(zs > 0.3, zs < 0.95)
 plt.scatter(zs[mask], pvalues[mask], alpha=0.2)
 plt.yscale('log')
 plt.show()
+"""
 
 correct = np.arange(len(idx1)) == np.argmin(D, axis=0)
 misassigned_pairs = []
@@ -197,8 +198,6 @@ for i in range(len(correct)):
         misassigned_pairs.append((gc_codes[idx1[i]], gc_codes[idx2[i]]))
 print(f'Misassigned pairs: {misassigned_pairs}')
 print(f'Precision: {np.mean(correct)} ({np.sum(correct)}/{len(correct)})')
-print(f'SS_res: {ss_res}')
-print(f'SS_tot: {ss_tot}')
 print(f'R2 coefficient: {r2}')
 
 settings = [(0, X[idx1, :], X[idx2, :], 'No correction')]

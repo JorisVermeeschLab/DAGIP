@@ -1,19 +1,14 @@
 import os
-import pickle
 
 import numpy as np
 import pandas as pd
-import tqdm
 from matplotlib import pyplot as plt
 from scipy.stats import pearsonr, ranksums
 from sklearn.decomposition import KernelPCA
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from dagip.correction.gc import gc_correction
-from dagip.ichorcna.model import IchorCNA
 from dagip.nipt.binning import ChromosomeBounds
-from dagip.core import ot_da
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
@@ -86,64 +81,24 @@ mappability = ChromosomeBounds.bin_from_10kb_to_1mb(mappability)
 centromeric = ChromosomeBounds.bin_from_10kb_to_1mb(centromeric)
 chrids = ChromosomeBounds.bin_from_10kb_to_1mb(chrids)
 
+# GC correction
+X_gc_corrected = gc_correction(X, gc_content)
 
-def process(METHOD):
-    if METHOD == 'rf-da':
-        ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
-        folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'HEMA')
-        X_adapted = gc_correction(X, gc_content)
-        side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
-        X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], side_info)
-    elif METHOD == 'rf':
-        side_info = np.asarray([gc_content, mappability]).T
-        X_adapted = np.copy(X)
-        for i in tqdm.tqdm(range(len(X))):
-            model = RandomForestRegressor(n_jobs=8)
-            model.fit(side_info, X[i, :])
-            x_pred = model.predict(side_info)
-            mask = (x_pred > 0)
-            X_adapted[i, mask] = X[i, mask] / x_pred[mask]
-    elif METHOD == 'gc-correction':
-        X_adapted = gc_correction(X, gc_content)
-    elif METHOD == 'centering-scaling':
-        X_adapted = np.empty_like(X)
-        X_adapted[idx1, :] = StandardScaler().fit_transform(X[idx1])
-        X_adapted[idx2, :] = StandardScaler().fit_transform(X[idx2])
-    elif METHOD == 'none':
-        X_adapted = X
-    else:
-        raise NotImplementedError(f'Unknown correction method "{METHOD}"')
-    return X_adapted
+# Center-and-scale
+X_ces = np.copy(X)
+X_ces[idx1, :] = RobustScaler().fit_transform(X[idx1])
+X_ces[idx2, :] = RobustScaler().fit_transform(X[idx2])
 
-
-
-for method in ['rf-da']:
-    if not os.path.exists(f'hema-{method}.npy'):
-        X_adapted = process(method)
-        np.save(f'hema-{method}.npy', X_adapted)
-
-
-"""
-x1 = X[idx1, :][1]
-x1_new = X_adapted[idx1, :][1]
-
-mask = np.logical_and(np.logical_and(gc_content > 0.3, gc_content < 0.7), x1 > 0)
-#mask = np.logical_and(mask, mappability > 0.9)
-xs = x1[mask][::20]
-ys = x1_new[mask][::20]
-zs = gc_content[mask][::20]
-plt.scatter(xs, ys, c=zs, alpha=1, s=0.5, cmap=plt.get_cmap('BrBG'))
-plt.show()
-
-import sys; sys.exit(0)
-"""
+# Domain adaptation
+if not os.path.exists(f'hema-corrected.npy'):
+    folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'HEMA')
+    X_adapted = np.copy(X_gc_corrected)
+    np.save(f'hema-corrected.npy', X_adapted)
 
 
 settings = [(0, 0, X[idx1, :], X[idx2, :], 'No correction')]
-X_gc_corrected = np.load(f'hema-gc-correction.npy')
 settings.append((0, 1, X_gc_corrected[idx1, :], X_gc_corrected[idx2, :], 'GC correction'))
-X_adapted = np.load(f'hema-centering-scaling.npy')
-settings.append((1, 0, X_adapted[idx1, :], X_adapted[idx2, :], 'Centering-scaling'))
+settings.append((1, 0, X_ces[idx1, :], X_ces[idx2, :], 'Centering-scaling'))
 X_adapted = np.load(f'hema-rf-da.npy')
 settings.append((1, 1, X_adapted[idx1, :], X_adapted[idx2, :], 'Optimal transport'))
 
@@ -174,8 +129,8 @@ for kk, (i, j, X1, X2, title) in enumerate(settings):
             )
 plt.tight_layout()
 plt.savefig('gc-bias-by-method.png', dpi=300, transparent=True)
-
-import sys; sys.exit(0)
+plt.clf()
+plt.close()
 
 alpha = 0.5
 size = 5

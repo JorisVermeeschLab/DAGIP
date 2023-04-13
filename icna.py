@@ -118,7 +118,6 @@ ploidy = np.asarray(ploidy)
 prevalence = np.asarray(prevalence)
 subclonal = np.asarray(subclonal)
 log_r = np.asarray(log_r)
-assert len(log_r.shape) == 2
 
 # Domain adaptation
 log_r_adapted = {}
@@ -127,7 +126,7 @@ fractions_adapted = {}
 ploidy_adapted = {}
 prevalence_adapted = {}
 subclonal_adapted = {}
-for METHOD in ['none', 'centering-scaling', 'rf-da']:
+for METHOD in ['rf-da']:
     idx1 = np.where(np.logical_and(y == 1, d == 1))[0]
     idx2 = np.where(np.logical_and(y == 1, d == 0))[0]
     if CORRECTION:
