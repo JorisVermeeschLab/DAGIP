@@ -1,3 +1,4 @@
+import argparse
 import os
 
 import numpy as np
@@ -7,11 +8,26 @@ from scipy.stats import pearsonr, ranksums
 from sklearn.decomposition import KernelPCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
+from dagip.core import ot_da, transport_plan, piecewise_transport_plans
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
+OUT_FOLDER = os.path.join(ROOT, 'figures')
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    'dataset',
+    type=str,
+    choices=[
+        'HEMA', 'OV', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter', 'NIPT-sequencer',
+        'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000'
+    ],
+    help='Dataset name'
+)
+args = parser.parse_args()
+DATASET = args.dataset
 
 # Load reference GC content and mappability
 mappability = np.load(os.path.join(DATA_FOLDER, 'mappability.npy'))
@@ -20,60 +36,81 @@ chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
 gc_content = df['GC.CONTENT'].to_numpy()
 
-# Load sequencer information
-with open(os.path.join(ROOT, DATA_FOLDER, 'nipt_adaptor_machine.csv'), 'r') as f:
-    lines = f.readlines()[1:]
-sequencer_machine_info = {}
-for line in lines:
-    elements = line.rstrip().split(',')
-    if len(elements) > 1:
-        try:
-            sequencer_machine_info[elements[0]] = (elements[1], elements[2])
-        except NotImplementedError:
-            pass
-
-# Load detailed annotations
-annotations = {}
-with open(os.path.join(ROOT, DATA_FOLDER, 'Sample_Disease_Annotation_toAntoine_20211026.tsv'), 'r') as f:
-    lines = f.readlines()[1:]
-for line in lines:
-    elements = line.rstrip().split('\t')
-    if len(elements) > 1:
-        annotations[elements[0]] = elements[2]
-
-data = np.load(os.path.join(DATA_FOLDER, 'hema.npz'), allow_pickle=True)
-whitelist = {'HL', 'DLBCL', 'MM', 'GRP', 'GRP_newlib'}
-idx = []
-for i in range(len(data['X'])):
-    if data['labels'][i] in whitelist:
-        idx.append(i)
-idx = np.asarray(idx)
-data_ = {}
-for attr in ['X', 'gc_codes', 'labels', 'metadata']:
-    data_[attr] = data[attr]
-data = data_
-for attr in ['X', 'gc_codes', 'labels', 'metadata']:
-    data[attr] = data[attr][idx]
+if DATASET == 'HEMA':
+    data = np.load(os.path.join(DATA_FOLDER, 'hema.npz'), allow_pickle=True)
+elif DATASET == 'OV':
+    data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
+else:
+    data = np.load(os.path.join(DATA_FOLDER, 'valpp.npz'), allow_pickle=True)
 
 gc_codes = data['gc_codes']
 X = data['X']
+labels = data['labels']
+
+# Remove failed samples
+n_reads = np.asarray([int(x['unpaired-reads']) for x in data['metadata']], dtype=int)
+mask = (n_reads > 3000000)
+X, gc_codes, labels = X[mask], gc_codes[mask], labels[mask]
+
+gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
+medians = np.median(X, axis=1)
+mask = (medians > 0)
+X[mask] /= medians[mask, np.newaxis]
+
 assert len(gc_codes) == len(set(gc_codes))
 
-X /= np.median(X, axis=1)[:, np.newaxis]
-
-t, y, d = [], [], []
-for label, gc_code in zip(data['labels'], data['gc_codes']):
-    pool_id = gc_code.split('-')[0]
-    indexes, sequencer = sequencer_machine_info[pool_id]
-    t.append(f'{indexes}-{sequencer}')
-    d.append('_newlib' in label)
-    y.append(label in {'HL', 'DLBCL', 'MM'})
-t = np.asarray(t, dtype=object)
-y = np.asarray(y, dtype=int)
-d = np.asarray(d, dtype=int)
-
-idx1 = np.where(np.logical_and(d == 1, y == 0))[0]
-idx2 = np.where(np.logical_and(d == 0, y == 0))[0]
+# Load sample pairs
+idx1, idx2 = [], []
+if DATASET == 'HEMA':
+    for i, (label, gc_code) in enumerate(zip(labels, gc_codes)):
+        pool_id = gc_code.split('-')[0]
+        if label == 'GRP':
+            idx2.append(i)
+        elif label == 'GRP_newlib':
+            idx1.append(i)
+elif DATASET == 'OV':
+    with open(os.path.join(DATA_FOLDER, 'control-and-ov-pairs.txt'), 'r') as f:
+        lines = f.readlines()[1:]
+    for line in lines:
+        elements = line.rstrip().split()
+        if len(elements) > 1:
+            if not ((elements[0] in gc_code_dict) and (elements[1] in gc_code_dict)):
+                # print(f'Could not load sample pair {elements}')
+                continue
+            if elements[0].startswith('healthy_control'):  # TODO
+                continue
+            i = gc_code_dict[elements[0]]
+            j = gc_code_dict[elements[1]]
+            idx1.append(i)
+            idx2.append(j)
+else:
+    print(DATASET, 'NIPT-hs2000', DATASET == 'NIPT-hs2000')
+    if DATASET == 'NIPT-chemistry':
+        filename = 'chemistry-validation.tsv'
+    elif DATASET == 'NIPT-adapter':
+        filename = 'kapa-vs-idt.tsv'
+    elif DATASET == 'NIPT-lib':
+        filename = 'nano-vs-kapa.tsv'
+    elif DATASET == 'NIPT-hs2000':
+        filename = 'hs2000-vs-novaseq.tsv'
+    elif DATASET == 'NIPT-hs2500':
+        filename = 'hs2500-vs-novaseq.tsv'
+    elif DATASET == 'NIPT-hs4000':
+        filename = 'hs4000-vs-novaseq.tsv'
+    else:
+        raise NotImplementedError(f'Unknown dataset "{DATASET}"')
+    nipt_mapping = {}
+    with open(os.path.join(DATA_FOLDER, filename), 'r') as f:
+        lines = f.readlines()[1:]
+    for line in lines:
+        line = line.rstrip()
+        if len(line) > 2:
+            elements = line.split()
+            if (elements[0] in gc_code_dict) and (elements[1] in gc_code_dict):
+               idx1.append(gc_code_dict[elements[0]])
+               idx2.append(gc_code_dict[elements[1]])
+idx1 = np.asarray(idx1)
+idx2 = np.asarray(idx2)
 
 X = ChromosomeBounds.bin_from_10kb_to_1mb(X)
 gc_content = ChromosomeBounds.bin_from_10kb_to_1mb(gc_content)
@@ -90,16 +127,23 @@ X_ces[idx1, :] = RobustScaler().fit_transform(X[idx1])
 X_ces[idx2, :] = RobustScaler().fit_transform(X[idx2])
 
 # Domain adaptation
-if not os.path.exists(f'hema-corrected.npy'):
-    folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'HEMA')
+if not os.path.exists(f'{DATASET}-corrected.npy'):
+    folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted = np.copy(X_gc_corrected)
-    np.save(f'hema-corrected.npy', X_adapted)
+    side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
+    X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], side_info)
+    np.save(f'{DATASET}-corrected.npy', X_adapted)
+X_adapted = np.load(f'{DATASET}-corrected.npy')
 
+# Compute optimal transport plan (after inference)
+scaler = RobustScaler()
+scaler.fit(X_adapted[idx2])
+# gammas = piecewise_transport_plans(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
+gamma = transport_plan(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
 
 settings = [(0, 0, X[idx1, :], X[idx2, :], 'No correction')]
 settings.append((0, 1, X_gc_corrected[idx1, :], X_gc_corrected[idx2, :], 'GC correction'))
 settings.append((1, 0, X_ces[idx1, :], X_ces[idx2, :], 'Centering-scaling'))
-X_adapted = np.load(f'hema-rf-da.npy')
 settings.append((1, 1, X_adapted[idx1, :], X_adapted[idx2, :], 'Optimal transport'))
 
 
@@ -111,7 +155,8 @@ for kk, (i, j, X1, X2, title) in enumerate(settings):
     ax[i, j].set_yscale('log')
     ax[i, j].set_xlim([0.32, 0.6])
     ax[i, j].set_ylim([[1e-64, 1e-64, 0.05, 1e-6][kk], 1.5 if (kk == 2) else None])
-    ax[i, j].spines[['right', 'top']].set_visible(False)
+    # ax[i, j].spines[['right', 'top']].set_visible(False)
+    ax[i, j].spines['right'].set_visible(False)
     if kk > 1:
         ax[i, j].set_xlabel('GC content')
     if kk % 2 == 0:
@@ -128,7 +173,7 @@ for kk, (i, j, X1, X2, title) in enumerate(settings):
                 color='black', marker='D'
             )
 plt.tight_layout()
-plt.savefig('gc-bias-by-method.png', dpi=300, transparent=True)
+plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-gc-bias-by-method.png'), dpi=300, transparent=True)
 plt.clf()
 plt.close()
 
@@ -232,5 +277,5 @@ ax[1, 5].set_ylabel('Z-score (optimal transport)')
 print('pearson OT', pearsonr(Z1.flatten()[::20], Z1_adapted.flatten()[::20]))
 
 # plt.tight_layout()
-plt.savefig('fig2.png')
+plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-fig2.png'))
 plt.show()

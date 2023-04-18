@@ -1,5 +1,3 @@
-tagore.py
-
 *.pyc
 *.pyd
 *~
@@ -8,9 +6,6 @@ tagore.py
 *.npy
 *.npz
 *.filepart
-data/
-ichorCNA-master/
-ichor-cna-results/
 
 .idea/
 *.egg-info/

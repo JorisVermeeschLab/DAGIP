@@ -126,7 +126,7 @@ fractions_adapted = {}
 ploidy_adapted = {}
 prevalence_adapted = {}
 subclonal_adapted = {}
-for METHOD in ['rf-da']:
+for METHOD in ['centering-scaling']:
     idx1 = np.where(np.logical_and(y == 1, d == 1))[0]
     idx2 = np.where(np.logical_and(y == 1, d == 0))[0]
     if CORRECTION:
@@ -142,9 +142,9 @@ for METHOD in ['rf-da']:
             X_adapted = gc_correction(X, gc_content)
         elif METHOD == 'centering-scaling':
             X_adapted = np.copy(X)
-            scaler2 = RobustScaler(with_centering=False)
+            scaler2 = RobustScaler()
             scaler2.fit(X[idx2])
-            X_adapted[idx1, :] = np.maximum(0, scaler2.inverse_transform(RobustScaler(with_centering=False).fit_transform(X[idx1])))
+            X_adapted[idx1, :] = np.maximum(0, scaler2.inverse_transform(RobustScaler().fit_transform(X[idx1])))
         elif METHOD == 'none':
             X_adapted = X
         else:

@@ -31,8 +31,8 @@ def smooth(X: np.ndarray) -> np.ndarray:
 
 
 def r2_coefficient(X: np.ndarray, Y: np.ndarray) -> float:
-    X = smooth(X)
-    Y = smooth(Y)
+    #X = smooth(X)
+    #Y = smooth(Y)
     ss_res = np.sum((X - Y) ** 2.)
     ss_tot = np.sum((Y - np.mean(Y, axis=0)[np.newaxis, :]) ** 2.)
     r2 = 1. - ss_res / ss_tot

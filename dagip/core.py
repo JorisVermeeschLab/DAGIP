@@ -20,6 +20,7 @@
 #  MA 02110-1301, USA.
 
 import os.path
+import random
 from typing import Tuple, List, Union
 
 import numpy as np
@@ -64,7 +65,7 @@ def pairwise_distances(
     return distances
 
 
-def ot_mapping(
+def transport_plan(
         X1: np.ndarray,
         X2: np.ndarray,
         p: int = 2
@@ -79,7 +80,48 @@ def ot_mapping(
     assert not np.any(np.isnan(distances ** p))
     assert not np.any(np.isinf(distances ** p))
 
-    gamma = ot.emd(a, b, distances ** p)
+    return ot.emd(a, b, distances ** p)
+
+
+def piecewise_transport_plans(
+        X1: np.ndarray,
+        X2: np.ndarray,
+        p: int = 2
+) -> np.ndarray:
+    n = len(X1)
+    m = len(X2)
+    a = np.full(n, 1. / n)
+    b = np.full(m, 1. / m)
+    bounds = ChromosomeBounds.get_bounds(X1.shape[1])
+    gammas = []
+    for i in range(len(bounds) - 1):
+        start, end = bounds[i], bounds[i + 1]
+        distances = pairwise_distances(X1[:, start:end], X2[:, start:end])
+        gamma = ot.emd(a, b, distances ** p)
+        gammas.append(gamma)
+    return np.asarray(gammas)
+
+
+def wtest(X1, X2, n_runs=100) -> float:
+
+    n, m = len(X1), len(X2)
+
+    W = wasserstein_distance(X1, X2)
+    values = list()
+    X = np.concatenate([X1, X2], axis=0)
+    for k in range(n_runs):
+        np.random.shuffle(X)
+        values.append(wasserstein_distance(X[:n], X[n:]))
+    pvalue = np.mean(W < np.asarray(values))
+    return float(pvalue)
+
+
+def ot_mapping(
+        X1: np.ndarray,
+        X2: np.ndarray,
+        p: int = 2
+) -> np.ndarray:
+    gamma = transport_plan(X1, X2, p=p)
     gamma /= np.sum(gamma, axis=1)[:, np.newaxis]
     return np.dot(gamma, X2)
 
@@ -106,12 +148,19 @@ def piecewise_ot_mapping(
 
 def follow_same_distribution(X1: np.ndarray, X2: np.ndarray) -> bool:
     p_values = compute_p_values(X1, X2)
-    print(np.median(p_values))
     return np.median(p_values) >= 0.5  # TODO
 
 
 def compute_p_values(X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
-    return np.asarray([scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X1.shape[1])])
+    p_values = []
+    for k in range(X1.shape[1]):
+        # p_values.append(scipy.stats.anderson_ksamp([X1[:, k], X2[:, k]]).significance_level)
+        try:
+            p_values.append(scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue)
+            # p_values.append(2 * scipy.stats.mannwhitneyu(X1[:, k], X2[:, k]).pvalue)
+        except ValueError:
+            pass
+    return np.asarray(p_values)
 
 
 def standardization(X: torch.Tensor, mu: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -144,7 +193,7 @@ def ot_da(
 
     X1_adapted = torch.nn.Parameter(torch.FloatTensor(np.copy(X1)))
     # X2_prime = torch.FloatTensor(ot_mapping((X1_corrected).cpu().data.numpy(), X2))
-    X2_prime = torch.FloatTensor(piecewise_ot_mapping((X1_corrected).cpu().data.numpy(), X2))  # TODO
+    X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))  # TODO
 
     optimizer = torch.optim.Adam([X1_adapted], lr=1e-3)  # 1e-3
 
@@ -152,8 +201,6 @@ def ot_da(
     p_values = compute_p_values(X1, X2)
     median_p_value = np.median(p_values)
     log_(f'Median p-value: {median_p_value}')
-    if median_p_value >= convergence_threshold:
-        convergence_threshold = 0.5 + 0.5 * median_p_value
 
     speed = 1.
     last = np.inf
@@ -187,7 +234,7 @@ def ot_da(
         diffs = standardization(torch.FloatTensor(X2), mu, scale)
         reg = reg + 0.5 * torch.mean((diffs - target_diffs_2) ** 2)
         print(loss.item(), reg.item())
-        total_loss = (speed * (1 / (reg_rate + 1) * loss + reg_rate / (reg_rate + 1) * reg))
+        total_loss = (speed * ((1 / (reg_rate + 1)) * loss + (reg_rate / (reg_rate + 1)) * reg))
         total_loss.backward()
         optimizer.step()
         with torch.no_grad():
@@ -195,10 +242,10 @@ def ot_da(
             X1_adapted.data = X1_adapted.data / torch.median(X1_adapted.data, dim=1).values.unsqueeze(1)
 
         # Update speed
-        if (loss + reg).item() < last:
+        if total_loss.item() < last:
             speed *= 1.02
         else:
-            speed *= 0.95
+            speed *= 0.9
         speed = float(np.clip(speed, 0.1, 10))
         last = (loss + reg_rate * reg).item()
 
@@ -207,13 +254,15 @@ def ot_da(
         # print((loss + reg).item(), loss.item(), reg.item(), len(X1), len(X2))
 
         # Check convergence
-        p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2)
-        median_p_values.append(np.median(p_values))
-        print('threshold', np.median(p_values), convergence_threshold)
-        if np.median(p_values) >= convergence_threshold:
+        #p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2)
+        #median_p_values.append(np.median(p_values))
+        median_p_values.append(wtest(X1_corrected.cpu().data.numpy(), X2))
+        print('threshold', median_p_values[-1], convergence_threshold)
+        if median_p_values[-1] >= convergence_threshold:
             break
 
-        if (iteration > 20) and (iteration % 10 == 0):
+        if (iteration > 20) and (iteration % 20 == 0):
+
             reg_rate *= 0.5
 
     losses = np.asarray(losses)

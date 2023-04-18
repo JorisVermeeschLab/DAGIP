@@ -146,8 +146,8 @@ if METHOD == 'rf-da':
     folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted[idx1] = ot_da(
         folder, X[idx1], X_adapted[idx2], side_info,
-        # convergence_threshold=1.0,
-        # max_n_iter=100
+        convergence_threshold=0.5,
+        max_n_iter=200
     )
 elif METHOD == 'gc-correction':
     X_adapted = gc_correction(X, gc_content)
@@ -155,8 +155,6 @@ elif METHOD == 'centering-scaling':
     X_adapted = np.copy(X)
     X_adapted[idx1, :] = RobustScaler().fit_transform(X_adapted[idx1])
     X_adapted[idx2, :] = RobustScaler().fit_transform(X_adapted[idx2])
-elif METHOD == 'quantiles':
-    X_adapted = QuantileTransformer(output_distribution='normal').fit_transform(X)
 elif METHOD == 'none':
     X_adapted = X
 else:
@@ -220,5 +218,5 @@ for i, X1, X2, title in settings:
     if (i,) == (0,):
         plt.legend(prop={'size': 5})
 
-plt.savefig('pairs.png')
+# plt.savefig('pairs.png')
 plt.show()

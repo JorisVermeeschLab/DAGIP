@@ -19,7 +19,7 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-from typing import Optional
+from typing import Optional, Tuple, List
 
 import numpy as np
 from sklearn.model_selection import KFold
@@ -34,19 +34,23 @@ class KFoldValidation(CrossValidation):
             self,
             *args,
             n_splits: int = 5,
+            n_repeats: int = 10,
             average_results: bool = True,
             groups: Optional[np.ndarray],
             **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.n_splits: int = int(n_splits)
+        self.n_repeats: int = int(n_repeats)
         self.average_results: bool = average_results
+        self.groups: np.ndarray = groups
+        self.splits: List[Tuple[np.ndarray, np.ndarray]] = self.make_splits()
 
+    def make_splits(self) -> List[Tuple[np.ndarray, np.ndarray]]:
         idx = np.where(self.d == self.target_domain)[0]
-
         kf = KFold(n_splits=self.n_splits, shuffle=True)
-        self.splits = []
-        for idx_train, idx_test in kf.split(idx, groups=(None if (groups is None) else groups[idx])):
+        splits = []
+        for idx_train, idx_test in kf.split(idx, groups=(None if (self.groups is None) else self.groups[idx])):
             idx_train = idx[idx_train]
             idx_test = idx[idx_test]
 
@@ -57,10 +61,10 @@ class KFoldValidation(CrossValidation):
 
             # Any sample that is not part of the target domain goes to the training set,
             # unless that sample is part of a group that is present in the test set.
-            if groups is not None:
-                blacklisted_groups = set(groups[mask_test])
+            if self.groups is not None:
+                blacklisted_groups = set(self.groups[mask_test])
                 for i in range(len(self.d)):
-                    if (self.d[i] != self.target_domain) and (groups[i] not in blacklisted_groups):
+                    if (self.d[i] != self.target_domain) and (self.groups[i] not in blacklisted_groups):
                         mask_train[i] = True
             else:
                 mask_train[self.d != self.target_domain] = True
@@ -71,9 +75,10 @@ class KFoldValidation(CrossValidation):
 
             assert len(set(list(idx_train)).intersection(set(list(idx_test)))) == 0
 
-            self.splits.append((idx_train, idx_test))
+            splits.append((idx_train, idx_test))
 
             assert not np.any(self.d[idx_test] != self.target_domain)
+        return splits
 
     def validate_by_concatenating(self, da_method: BaseMethod):
 
@@ -82,19 +87,21 @@ class KFoldValidation(CrossValidation):
         y_target = []
         y_pred = {model_name: [] for model_name in CrossValidation.PIPELINES.keys()}
 
-        for idx_train, idx_test in self.splits:
+        for _ in range(self.n_repeats):
+            self.splits = self.make_splits()
+            for idx_train, idx_test in self.splits:
 
-            X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
+                X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
 
-            y_target.append(y_test)
+                y_target.append(y_test)
 
-            for model_name, pipeline in CrossValidation.PIPELINES.items():
+                for model_name, pipeline in CrossValidation.PIPELINES.items():
 
-                # Train supervised model
-                pipeline.fit(X_train, y_train)
+                    # Train supervised model
+                    pipeline.fit(X_train, y_train)
 
-                # Predict on the held-out sample
-                y_pred[model_name].append(pipeline.predict_proba(X_test)[:, 1])
+                    # Predict on the held-out sample
+                    y_pred[model_name].append(pipeline.predict_proba(X_test)[:, 1])
 
         y_target = np.squeeze(np.concatenate(y_target, axis=0))
         for model_name in CrossValidation.PIPELINES.keys():
@@ -109,19 +116,21 @@ class KFoldValidation(CrossValidation):
 
         results_ = {model_name: [] for model_name in CrossValidation.PIPELINES.keys()}
 
-        for idx_train, idx_test in self.splits:
+        for _ in range(self.n_repeats):
+            self.splits = self.make_splits()
+            for idx_train, idx_test in self.splits:
 
-            X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
+                X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
 
-            for model_name, pipeline in CrossValidation.PIPELINES.items():
+                for model_name, pipeline in CrossValidation.PIPELINES.items():
 
-                # Train supervised model
-                pipeline.fit(X_train, y_train)
+                    # Train supervised model
+                    pipeline.fit(X_train, y_train)
 
-                # Predict on the held-out sample
-                y_pred = pipeline.predict_proba(X_test)[:, 1]
+                    # Predict on the held-out sample
+                    y_pred = pipeline.predict_proba(X_test)[:, 1]
 
-                results_[model_name].append(CrossValidation.compute_evaluation_metrics(y_test, y_pred))
+                    results_[model_name].append(CrossValidation.compute_evaluation_metrics(y_test, y_pred))
 
         results = {}
         for model_name in CrossValidation.PIPELINES.keys():

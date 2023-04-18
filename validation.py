@@ -148,15 +148,13 @@ side_info = np.asarray([gc_content, mappability, centromeric, chrids])
 
 validation = KFoldValidation(
     X, y, d, t, side_info, gc_codes,
-    target_domain=0, redo_binning=False, average_results=False, n_splits=5, groups=groups
+    target_domain=0, redo_binning=False, average_results=True, n_splits=5, n_repeats=10,
+    groups=groups
 )
 # validation = LoncoValidation(X, y, d, t, side_info, gc_codes, target_domain=0)
 # validation = TrainTestValidation(X, y, d, t, side_info, gc_codes, target_domain=0, redo_binning=False)
 ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
-if DATASET == 'OV':
-    folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'OV')
-else:
-    folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'HEMA')
+folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
 validation.validate(BaselineMethod())
 validation.validate(CenteringScaling())
 validation.validate(GCCorrection())
