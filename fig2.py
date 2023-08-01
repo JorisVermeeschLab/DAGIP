@@ -4,13 +4,14 @@ import os
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from scipy.stats import pearsonr, ranksums
+from scipy.stats import pearsonr, ks_2samp
 from sklearn.decomposition import KernelPCA
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.preprocessing import RobustScaler
 
-from dagip.core import ot_da, transport_plan, piecewise_transport_plans
+from dagip.core import ot_da, transport_plan
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
+from dagip.retraction import GIPRetraction
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
@@ -21,7 +22,7 @@ parser.add_argument(
     'dataset',
     type=str,
     choices=[
-        'HEMA', 'OV', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter', 'NIPT-sequencer',
+        'HEMA', 'OV', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter',
         'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000'
     ],
     help='Dataset name'
@@ -131,15 +132,10 @@ if not os.path.exists(f'{DATASET}-corrected.npy'):
     folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted = np.copy(X_gc_corrected)
     side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
-    X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], side_info)
+    ret = GIPRetraction(side_info[:, 0])
+    X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], ret=ret)
     np.save(f'{DATASET}-corrected.npy', X_adapted)
 X_adapted = np.load(f'{DATASET}-corrected.npy')
-
-# Compute optimal transport plan (after inference)
-scaler = RobustScaler()
-scaler.fit(X_adapted[idx2])
-# gammas = piecewise_transport_plans(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
-gamma = transport_plan(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
 
 settings = [(0, 0, X[idx1, :], X[idx2, :], 'No correction')]
 settings.append((0, 1, X_gc_corrected[idx1, :], X_gc_corrected[idx2, :], 'GC correction'))
@@ -150,7 +146,7 @@ settings.append((1, 1, X_adapted[idx1, :], X_adapted[idx2, :], 'Optimal transpor
 colors = ['darkcyan', 'darkcyan', 'darkcyan', 'darkcyan']
 f, ax = plt.subplots(2, 2, figsize=(16, 8))
 for kk, (i, j, X1, X2, title) in enumerate(settings):
-    pvalues = np.asarray([ranksums(X1[:, k], X2[:, k]).pvalue for k in range(X.shape[1])])
+    pvalues = np.asarray([ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X.shape[1])])
     ax[i, j].scatter(gc_content, pvalues, alpha=0.1, color=colors[kk])
     ax[i, j].set_yscale('log')
     ax[i, j].set_xlim([0.32, 0.6])
@@ -160,7 +156,7 @@ for kk, (i, j, X1, X2, title) in enumerate(settings):
     if kk > 1:
         ax[i, j].set_xlabel('GC content')
     if kk % 2 == 0:
-        ax[i, j].set_ylabel('Wilcoxon rank-sum p-value')
+        ax[i, j].set_ylabel('Two-sample KS p-value')
     ax[i, j].set_title(title)
     ax[i, j].axhline(y=0.5, linestyle='--', color='darkblue')
 
@@ -173,7 +169,7 @@ for kk, (i, j, X1, X2, title) in enumerate(settings):
                 color='black', marker='D'
             )
 plt.tight_layout()
-plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-gc-bias-by-method.png'), dpi=300, transparent=True)
+plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-gc-bias-by-method.png'), dpi=150, transparent=True)
 plt.clf()
 plt.close()
 
@@ -182,9 +178,10 @@ size = 5
 f, ax = plt.subplots(2, 6, figsize=(16, 8), gridspec_kw=dict(width_ratios=[6,6,2,6,2,6], hspace=0.3))
 
 numb_fontsize = 14
-ax[0, 0].text(0.07, 0.90, '(a)', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
-ax[0, 0].text(0.45, 0.90, '(b)', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
-ax[0, 0].text(0.70, 0.90, '(c)', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
+ax[0, 0].text(0.07, 0.90, '(A)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
+ax[0, 0].text(0.45, 0.90, '(B)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
+ax[0, 0].text(0.70, 0.90, '(C)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
+ax[0, 0].text(0.70, 0.45, '(D)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
 
 for i, j, X1, X2, title in settings:
     print(len(X1), len(X2))
@@ -210,7 +207,8 @@ import scipy.stats
 res = []
 titles = []
 for i, j, X1, X2, title in settings[::-1]:
-    pvalues = np.asarray([scipy.stats.ranksums(X1[:, k], X2[:, k]).pvalue for k in range(X.shape[1])])
+    pvalues = np.asarray([scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X.shape[1])])
+    print(title, pvalues)
 
     res.append(pvalues)
     titles.append(title)
@@ -225,7 +223,8 @@ for body in r['bodies']:
 # ax[0, 3].set_xscale('log')
 ax[0, 3].spines['right'].set_visible(False)
 ax[0, 3].spines['top'].set_visible(False)
-ax[0, 3].set_xlabel('Wilcoxon rank-sum p-value')
+ax[0, 3].set_xlabel('Two-sample KS p-value')
+print(titles)
 ax[0, 3].set_yticks(range(1, len(res) + 1), titles)
 ax[0, 3].axvline(x=0.5, color='black', linestyle='--', linewidth=0.5)
 
@@ -240,42 +239,72 @@ for body in r['bodies']:
 # ax[1, 3].set_xscale('log')
 ax[1, 3].spines['right'].set_visible(False)
 ax[1, 3].spines['top'].set_visible(False)
-ax[1, 3].set_xlabel('Wilcoxon rank-sum log(p-value)')
+ax[1, 3].set_xlabel('Two-sample KS log(p-value)')
 ax[1, 3].set_yticks(range(1, len(res) + 1), titles)
 ax[1, 3].axvline(x=np.log(0.5), color='black', linestyle='--', linewidth=0.5)
 
 ax[0, 4].remove()
 ax[1, 4].remove()
 
+Z1 = RobustScaler().fit_transform(X[idx1, :])
+Z1_corrected = RobustScaler().fit_transform(X_gc_corrected[idx1, :])
+Z1_adapted = RobustScaler().fit_transform(X_adapted[idx1, :])
+
 zscore_lim = 3
 _, _, X1, _, _ = settings[0]
-Z1 = StandardScaler().fit_transform(X1)
-i, j, X1_adapted, _, title = settings[1]
-Z1_adapted = StandardScaler().fit_transform(X1_adapted)
 ax[0, 5].plot([-zscore_lim, zscore_lim], [-zscore_lim, zscore_lim], color='black', linestyle='--', linewidth=0.5)
-ax[0, 5].scatter(Z1.flatten()[::20], Z1_adapted.flatten()[::20], s=4, alpha=0.03, color='black')
+ax[0, 5].scatter(Z1_corrected.flatten()[::20], Z1_adapted.flatten()[::20], s=4, alpha=0.03, color='black')
 ax[0, 5].set_xlim(-zscore_lim, zscore_lim)
 ax[0, 5].set_ylim(-zscore_lim, zscore_lim)
 ax[0, 5].spines['right'].set_visible(False)
 ax[0, 5].spines['top'].set_visible(False)
-ax[0, 5].set_title('GC-correction')
-ax[0, 5].set_xlabel('Z-score (no correction)')
-ax[0, 5].set_ylabel('Z-score (GC-correction)')
-print('pearson GC correction', pearsonr(Z1.flatten()[::20], Z1_adapted.flatten()[::20]))
+r = pearsonr(Z1_corrected.flatten()[::20], Z1_adapted.flatten()[::20])[0]
+ax[0, 5].set_title(f'Pearson r = {r:.3f}')
+ax[0, 5].set_xlabel('Z-score (GC-correction)')
+ax[0, 5].set_ylabel('Z-score (optimal transport)')
+print('pearson GC correction', r)
 
-_, _, X1_adapted, _, _ = settings[3]
-Z1_adapted = StandardScaler().fit_transform(X1_adapted)
-ax[1, 5].plot([-zscore_lim, zscore_lim], [-zscore_lim, zscore_lim], color='black', linestyle='--', linewidth=0.5)
-ax[1, 5].scatter(Z1.flatten()[::20], Z1_adapted.flatten()[::20], s=4, alpha=0.03, color='black')
-ax[1, 5].set_xlim(-zscore_lim, zscore_lim)
-ax[1, 5].set_ylim(-zscore_lim, zscore_lim)
+# Compute optimal transport plan (after inference)
+scaler = RobustScaler()
+scaler.fit(X_adapted[idx2])
+gamma = transport_plan(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
+if DATASET == 'HEMA':
+    d1, d2 = 7, 8
+elif DATASET == 'OV':
+    d1, d2 = 9, 10
+elif DATASET == 'NIPT-chemistry':
+    d1, d2 = '6,a', '6,b'
+elif DATASET == 'NIPT-lib':
+    d1, d2 = '1,a', '1,b'
+elif DATASET == 'NIPT-adapter':
+    d1, d2 = '2,a', '2,b'
+elif DATASET == 'NIPT-hs2000':
+    d1, d2 = '3,a', '3,b'
+elif DATASET == 'NIPT-hs2500':
+    d1, d2 = '4,a', '4,b'
+elif DATASET == 'NIPT-hs4000':
+    d1, d2 = '5,a', '5,b'
+else:
+    raise NotImplementedError(f'Unknown dataset "{DATASET}"')
+unique, counts = np.unique(np.sum(gamma > 1e-5, axis=0), return_counts=True)
+ax[1, 5].bar(
+    unique - 0.15, counts, color='darkgoldenrod', width=0.3,
+    label=r'$\mathcal{D}_{' + str(d1) + r'}$' + r' $\rightarrow$ ' + r'$\mathcal{D}_{' + str(d2) + r'}$'
+)
+print({u: c for u, c in zip(unique, counts)})
+unique2, counts = np.unique(np.sum(gamma > 1e-5, axis=1), return_counts=True)
+ax[1, 5].bar(
+    unique2 + 0.15, counts, color='darkcyan', width=0.3,
+    label=r'$\mathcal{D}_{' + str(d2) + r'}$' + r' $\rightarrow$ ' + r'$\mathcal{D}_{' + str(d1) + r'}$'
+)
+print({u: c for u, c in zip(unique2, counts)})
+ax[1, 5].legend()
+ax[1, 5].set_xticks(range(1, max(max(unique), max(unique2)) + 1), range(1, max(max(unique), max(unique2)) + 1))
+ax[1, 5].set_xlabel(r'Number of similar patients in source domain')
+ax[1, 5].set_ylabel(r'Patients in target domain')
 ax[1, 5].spines['right'].set_visible(False)
 ax[1, 5].spines['top'].set_visible(False)
-ax[1, 5].set_title('Optimal transport')
-ax[1, 5].set_xlabel('Z-score (no correction)')
-ax[1, 5].set_ylabel('Z-score (optimal transport)')
-print('pearson OT', pearsonr(Z1.flatten()[::20], Z1_adapted.flatten()[::20]))
 
 # plt.tight_layout()
-plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-fig2.png'))
-plt.show()
+plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-fig2.png'), dpi=150)
+# plt.show()

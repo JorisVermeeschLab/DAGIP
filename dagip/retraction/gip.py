@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  r2.py
+#  gip.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -20,22 +20,20 @@
 #  MA 02110-1301, USA.
 
 import numpy as np
-from matplotlib import pyplot as plt
-from scipy.signal import savgol_filter
+import torch
+
+from dagip.nn.gc_correction import diff_gc_correction
+from dagip.retraction.base import Retraction
 
 
-def smooth(X: np.ndarray) -> np.ndarray:
-    X = np.copy(X)
-    for i in range(len(X)):
-        X[i, :] = savgol_filter(X[i, :], 5, 2)
-    return X
+class GIPRetraction(Retraction):
 
+    def __init__(self, gc_content: np.ndarray):
+        self.gc_content = torch.FloatTensor((np.round(gc_content * 1000).astype(int) // 10).astype(float))
 
-def r2_coefficient(X: np.ndarray, Y: np.ndarray) -> float:
-    #X = smooth(X)
-    #Y = smooth(Y)
+    def _f1(self, X: torch.Tensor) -> torch.Tensor:
+        X = torch.clamp(X, 0)
+        return X / torch.median(X, dim=1).values.unsqueeze(1)
 
-    ss_res = np.sum((X - Y) ** 2.)
-    ss_tot = np.sum((Y - np.mean(Y, axis=0)[np.newaxis, :]) ** 2.)
-    r2 = 1. - ss_res / ss_tot
-    return float(r2)
+    def _f2(self, X: torch.Tensor) -> torch.Tensor:
+        return diff_gc_correction(X, self.gc_content)

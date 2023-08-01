@@ -20,8 +20,7 @@
 #  MA 02110-1301, USA.
 
 import os.path
-import random
-from typing import Tuple, List, Union
+from typing import Tuple, Union, Callable
 
 import numpy as np
 import ot
@@ -33,7 +32,8 @@ from scipy.spatial.distance import cdist
 from sklearn.decomposition import KernelPCA
 
 from dagip.nipt.binning import ChromosomeBounds
-from dagip.nn.gc_correction import diff_gc_correction
+from dagip.retraction import Identity
+from dagip.retraction.base import Retraction
 from dagip.utils import log_
 
 
@@ -102,20 +102,6 @@ def piecewise_transport_plans(
     return np.asarray(gammas)
 
 
-def wtest(X1, X2, n_runs=100) -> float:
-
-    n, m = len(X1), len(X2)
-
-    W = wasserstein_distance(X1, X2)
-    values = list()
-    X = np.concatenate([X1, X2], axis=0)
-    for k in range(n_runs):
-        np.random.shuffle(X)
-        values.append(wasserstein_distance(X[:n], X[n:]))
-    pvalue = np.mean(W < np.asarray(values))
-    return float(pvalue)
-
-
 def ot_mapping(
         X1: np.ndarray,
         X2: np.ndarray,
@@ -146,20 +132,14 @@ def piecewise_ot_mapping(
     return out
 
 
-def follow_same_distribution(X1: np.ndarray, X2: np.ndarray) -> bool:
-    p_values = compute_p_values(X1, X2)
-    return np.median(p_values) >= 0.5  # TODO
+def default_u_test(x1: np.ndarray, x2: np.ndarray) -> float:
+    return float(scipy.stats.ks_2samp(x1, x2).pvalue)
 
 
-def compute_p_values(X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
+def compute_p_values(X1: np.ndarray, X2: np.ndarray, u_test: Callable) -> np.ndarray:
     p_values = []
     for k in range(X1.shape[1]):
-        # p_values.append(scipy.stats.anderson_ksamp([X1[:, k], X2[:, k]]).significance_level)
-        try:
-            p_values.append(scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue)
-            # p_values.append(2 * scipy.stats.mannwhitneyu(X1[:, k], X2[:, k]).pvalue)
-        except ValueError:
-            pass
+        p_values.append(u_test(X1[:, k], X2[:, k]))
     return np.asarray(p_values)
 
 
@@ -171,19 +151,20 @@ def ot_da(
         folder: str,
         X1: np.ndarray,
         X2: np.ndarray,
-        side_info: np.ndarray,
+        ret: Retraction = Identity(),
+        u_test: Callable = default_u_test,
+        reg_rate: float = 1000.0,
         max_n_iter: int = 1000,  # 1000
+        chromosome_wise: bool = False,
         convergence_threshold: float = 0.5,
+        lr: float = 0.0005,
+        verbose: bool = True
 ) -> np.ndarray:
-
-    reg_rate = 1000
 
     scale = torch.FloatTensor(1. / np.maximum(np.std(X2, axis=0), 1e-3)[np.newaxis, :])
 
-    gc_content = torch.FloatTensor((np.round(side_info[:, 0] * 1000).astype(int) // 10).astype(float))
-
     with torch.no_grad():
-        X1_corrected = diff_gc_correction(torch.FloatTensor(X1), gc_content)
+        X1_corrected = ret(X1)
         target_diffs_1 = standardization(
             X1_corrected, torch.median(X1_corrected, dim=0).values.unsqueeze(0), scale
         )
@@ -192,36 +173,41 @@ def ot_da(
         )
 
     X1_adapted = torch.nn.Parameter(torch.FloatTensor(np.copy(X1)))
-    # X2_prime = torch.FloatTensor(ot_mapping((X1_corrected).cpu().data.numpy(), X2))
-    X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))  # TODO
+    if chromosome_wise:
+        X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+    else:
+        X2_prime = torch.FloatTensor(ot_mapping((X1_corrected).cpu().data.numpy(), X2))
 
-    optimizer = torch.optim.Adam([X1_adapted], lr=1e-3)  # 1e-3
+    optimizer = torch.optim.Adam([X1_adapted], lr=lr)
 
     # Determine convergence criterion
-    p_values = compute_p_values(X1, X2)
+    p_values = compute_p_values(X1, X2, u_test)
     median_p_value = np.median(p_values)
-    log_(f'Median p-value: {median_p_value}')
+    log_(f'Median p-value: {median_p_value}', verbose=verbose)
 
     speed = 1.
     last = np.inf
 
     losses = []
     median_p_values = []
-    for iteration in tqdm.tqdm(range(max_n_iter), desc='OT'):  # TODO
+    pbar = tqdm.tqdm(range(max_n_iter), desc='OT')
+    for iteration in pbar:
 
         optimizer.zero_grad()
 
-        # GC correction
-        X1_corrected = diff_gc_correction(X1_adapted, gc_content)
+        # Retracting on the manifold
+        X1_corrected = ret.f2(X1_adapted)
 
         # Define targets
         if iteration % 10 == 0:
-            # X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
-            X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))  # TODO
+            if chromosome_wise:
+                X2_prime = torch.FloatTensor(piecewise_ot_mapping(X1_corrected.cpu().data.numpy(), X2))
+            else:
+                X2_prime = torch.FloatTensor(ot_mapping(X1_corrected.cpu().data.numpy(), X2))
 
         # Compensate the reduction of variance caused by the OT mapping
         factor = torch.mean(torch.std(torch.FloatTensor(X2), dim=0)) / torch.mean(torch.std(X2_prime, dim=0))
-        mu = torch.median(X2_prime, dim=0).values.unsqueeze(0)
+        mu = torch.mean(X2_prime, dim=0).unsqueeze(0)
         X2_prime = factor * (X2_prime - mu) + mu
 
         # Wasserstein distance
@@ -233,13 +219,13 @@ def ot_da(
         reg = 0.5 * torch.mean((diffs - target_diffs_1) ** 2)
         diffs = standardization(torch.FloatTensor(X2), mu, scale)
         reg = reg + 0.5 * torch.mean((diffs - target_diffs_2) ** 2)
-        print(loss.item(), reg.item())
         total_loss = (speed * ((1 / (reg_rate + 1)) * loss + (reg_rate / (reg_rate + 1)) * reg))
         total_loss.backward()
         optimizer.step()
+
+        # Retraction mapping in the original space
         with torch.no_grad():
-            X1_adapted.data = torch.clamp(X1_adapted.data, 0)
-            X1_adapted.data = X1_adapted.data / torch.median(X1_adapted.data, dim=1).values.unsqueeze(1)
+            X1_adapted.data = ret.f1(X1_adapted.data)
 
         # Update speed
         if total_loss.item() < last:
@@ -254,85 +240,84 @@ def ot_da(
         # print((loss + reg).item(), loss.item(), reg.item(), len(X1), len(X2))
 
         # Check convergence
-        #p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2)
-        #median_p_values.append(np.median(p_values))
-        median_p_values.append(wtest(X1_corrected.cpu().data.numpy(), X2))
-        print('threshold', median_p_values[-1], convergence_threshold)
+        p_values = compute_p_values(X1_corrected.cpu().data.numpy(), X2, u_test)
+        median_p_values.append(float(np.median(p_values)))
+        pbar.set_description(f'OT {median_p_values[-1]:.3f}')
         if median_p_values[-1] >= convergence_threshold:
             break
-
         if (iteration > 20) and (iteration % 20 == 0):
-
-            reg_rate *= 0.5
+            reg_rate = max(1, reg_rate * 0.9)
 
     losses = np.asarray(losses)
 
-    X1_corrected = diff_gc_correction(X1_adapted, gc_content)
     X1_corrected = X1_corrected.cpu().data.numpy()
 
     _, gamma = wasserstein_distance(X1_corrected, X2, return_plan=True)
 
     # Save figures
-    if not os.path.isdir(folder):
-        os.makedirs(folder)
-    p_values = compute_p_values(X1_corrected, X2)
-    log_(f'Median p-value after correction: {np.median(p_values)}')
-    plt.subplot(2, 1, 1)
-    plt.violinplot(p_values, vert=False, showmeans=True, showextrema=True)
-    plt.xlabel('Wilcoxon rank-sum p-value')
-    plt.subplot(2, 1, 2)
-    plt.violinplot(np.log(p_values), vert=False, showmeans=True, showextrema=True)
-    plt.xlabel('Wilcoxon rank-sum log(p-value)')
-    plt.savefig(os.path.join(folder, 'p-values-final.png'), dpi=300)
-    plt.clf()
-    plt.plot(p_values)
-    plt.xlabel('Bin')
-    plt.ylabel('Wilcoxon rank-sum p-value')
-    plt.savefig(os.path.join(folder, 'p-values.png'), dpi=300)
-    plt.clf()
-    plt.subplot(1, 2, 1)
-    plt.imshow(cdist(X1, X1))
-    plt.subplot(1, 2, 2)
-    plt.imshow(cdist(X1_corrected, X1_corrected))
-    plt.savefig(os.path.join(folder, 'D11.png'), dpi=400)
-    plt.clf()
-    plt.subplot(1, 2, 1)
-    plt.imshow(cdist(X1, X2))
-    plt.subplot(1, 2, 2)
-    plt.imshow(cdist(X1_corrected, X2))
-    plt.savefig(os.path.join(folder, 'D12.png'), dpi=400)
-    plt.clf()
-    plt.plot(median_p_values)
-    plt.xlabel('Iterations')
-    plt.ylabel('Median p-value')
-    plt.savefig(os.path.join(folder, 'median-p-values.png'), dpi=300)
-    plt.clf()
-    plt.plot(losses[:, 0], label='Loss')
-    plt.plot(losses[:, 1], label='Reg')
-    plt.plot(losses[:, 0] + losses[:, 1], label='Total')
-    plt.legend()
-    plt.xlabel('Iterations')
-    plt.ylabel('Loss function')
-    plt.savefig(os.path.join(folder, 'loss.png'), dpi=300)
-    plt.clf()
-    plt.imshow(gamma)
-    plt.savefig(os.path.join(folder, 'transport-plan.png'), dpi=300)
-    plt.clf()
-    plt.subplot(1, 2, 1)
-    pca = KernelPCA()
-    pca.fit(X1)
-    coords = pca.transform(X1)
-    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
-    coords = pca.transform(X2)
-    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
-    plt.subplot(1, 2, 2)
-    pca = KernelPCA()
-    pca.fit(X1_corrected)
-    coords = pca.transform(X1_corrected)
-    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
-    coords = pca.transform(X2)
-    plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
-    plt.savefig(os.path.join(folder, 'kpca.png'), dpi=300)
-    plt.clf()
+    try:
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        p_values = compute_p_values(X1_corrected, X2, u_test)
+        log_(f'Median p-value after correction: {np.median(p_values)}', verbose=verbose)
+        plt.subplot(2, 1, 1)
+        plt.violinplot(p_values, vert=False, showmeans=True, showextrema=True)
+        plt.xlabel('p-value')
+        plt.subplot(2, 1, 2)
+        plt.violinplot(np.log(p_values), vert=False, showmeans=True, showextrema=True)
+        plt.xlabel('log(p-value)')
+        plt.savefig(os.path.join(folder, 'p-values-final.png'), dpi=300)
+        plt.clf()
+        plt.plot(p_values)
+        plt.xlabel('Bin')
+        plt.ylabel('p-value')
+        plt.savefig(os.path.join(folder, 'p-values.png'), dpi=300)
+        plt.clf()
+        plt.subplot(1, 2, 1)
+        plt.imshow(cdist(X1, X1))
+        plt.subplot(1, 2, 2)
+        plt.imshow(cdist(X1_corrected, X1_corrected))
+        plt.savefig(os.path.join(folder, 'D11.png'), dpi=400)
+        plt.clf()
+        plt.subplot(1, 2, 1)
+        plt.imshow(cdist(X1, X2))
+        plt.subplot(1, 2, 2)
+        plt.imshow(cdist(X1_corrected, X2))
+        plt.savefig(os.path.join(folder, 'D12.png'), dpi=400)
+        plt.clf()
+        plt.plot(median_p_values)
+        plt.xlabel('Iterations')
+        plt.ylabel('Median p-value')
+        plt.savefig(os.path.join(folder, 'median-p-values.png'), dpi=300)
+        plt.clf()
+        plt.plot(losses[:, 0], label='Loss')
+        plt.plot(losses[:, 1], label='Reg')
+        plt.plot(losses[:, 0] + losses[:, 1], label='Total')
+        plt.legend()
+        plt.xlabel('Iterations')
+        plt.ylabel('Loss function')
+        plt.savefig(os.path.join(folder, 'loss.png'), dpi=300)
+        plt.clf()
+        plt.imshow(gamma)
+        plt.savefig(os.path.join(folder, 'transport-plan.png'), dpi=300)
+        plt.clf()
+        plt.subplot(1, 2, 1)
+        pca = KernelPCA()
+        pca.fit(X1)
+        coords = pca.transform(X1)
+        plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+        coords = pca.transform(X2)
+        plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+        plt.subplot(1, 2, 2)
+        pca = KernelPCA()
+        pca.fit(X1_corrected)
+        coords = pca.transform(X1_corrected)
+        plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+        coords = pca.transform(X2)
+        plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
+        plt.savefig(os.path.join(folder, 'kpca.png'), dpi=300)
+        plt.clf()
+    except ValueError:
+        pass
 
     return X1_corrected

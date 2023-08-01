@@ -28,6 +28,7 @@ from dagip.benchmark.base import BaseMethod
 from dagip.core import ot_da
 from dagip.correction.gc import gc_correction
 from dagip.plot import scatter_plot
+from dagip.retraction import GIPRetraction
 from dagip.utils import log_
 
 
@@ -107,7 +108,8 @@ class RFDomainAdaptation(BaseMethod):
         folder = os.path.join(self.folder, str(uuid.uuid4()))
         if not os.path.isdir(folder):
             os.makedirs(folder)
-        return ot_da(folder, X1, X2, side_info)
+        ret = GIPRetraction(side_info[:, 0])
+        return ot_da(folder, X1, X2, ret=ret)
 
     def adapt_sample_wise(
             self,

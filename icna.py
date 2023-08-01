@@ -9,15 +9,16 @@ from dagip.core import ot_da
 from dagip.correction.gc import gc_correction
 from dagip.ichorcna.metrics import ploidy_accuracy, cna_accuracy, sov_refine, absolute_error
 from dagip.nipt.binning import ChromosomeBounds
+from dagip.retraction import GIPRetraction
 from dagip.tools.ichor_cna import ichor_cna, create_ichor_cna_normal_panel, load_ichor_cna_results
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 
-CORRECTION = True
-REFERENCE_FREE = False
-BACKWARD = True
+CORRECTION = False
+REFERENCE_FREE = True
+BACKWARD = False
 
 
 # Load reference GC content and mappability
@@ -126,7 +127,7 @@ fractions_adapted = {}
 ploidy_adapted = {}
 prevalence_adapted = {}
 subclonal_adapted = {}
-for METHOD in ['centering-scaling']:
+for METHOD in ['rf-da']:
     idx1 = np.where(np.logical_and(y == 1, d == 1))[0]
     idx2 = np.where(np.logical_and(y == 1, d == 0))[0]
     if CORRECTION:
@@ -135,8 +136,9 @@ for METHOD in ['centering-scaling']:
             folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'icna')
             X_adapted = gc_correction(X, gc_content)
             side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
+            ret = GIPRetraction(side_info[:, 0])
             X_adapted[idx1] = ot_da(
-                folder, X[idx1], X_adapted[idx2], side_info
+                folder, X[idx1], X_adapted[idx2], ret=ret
             )
         elif METHOD == 'gc-correction':
             X_adapted = gc_correction(X, gc_content)
@@ -226,6 +228,11 @@ for METHOD in ['centering-scaling']:
     print('Error on cellular prevalence', np.mean(absolute_error(prevalence, prevalence_adapted[METHOD])))
     print('Error on proportion of subclonal CNAs', np.mean(absolute_error(subclonal, subclonal_adapted[METHOD])))
     print('')
+
+
+np.savez('fractions-noref.npz', before=fractions, after=fractions_adapted['rf-da'])
+plt.scatter(fractions, fractions_adapted['rf-da'])
+plt.show()
 
 # --------------------------------------------
 # Make figures

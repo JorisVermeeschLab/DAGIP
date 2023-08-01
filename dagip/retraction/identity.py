@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  r2.py
+#  identity.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,23 +19,15 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-import numpy as np
-from matplotlib import pyplot as plt
-from scipy.signal import savgol_filter
+import torch
+
+from dagip.retraction.base import Retraction
 
 
-def smooth(X: np.ndarray) -> np.ndarray:
-    X = np.copy(X)
-    for i in range(len(X)):
-        X[i, :] = savgol_filter(X[i, :], 5, 2)
-    return X
+class Identity(Retraction):
 
+    def _f1(self, X: torch.Tensor) -> torch.Tensor:
+        return X
 
-def r2_coefficient(X: np.ndarray, Y: np.ndarray) -> float:
-    #X = smooth(X)
-    #Y = smooth(Y)
-
-    ss_res = np.sum((X - Y) ** 2.)
-    ss_tot = np.sum((Y - np.mean(Y, axis=0)[np.newaxis, :]) ** 2.)
-    r2 = 1. - ss_res / ss_tot
-    return float(r2)
+    def _f2(self, X: torch.Tensor) -> torch.Tensor:
+        return X

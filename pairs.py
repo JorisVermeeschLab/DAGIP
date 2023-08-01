@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler, QuantileTransformer, RobustSca
 from dagip.core import ot_da
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
+from dagip.retraction import GIPRetraction
 from dagip.stats.bounds import compute_theoretical_bounds
 from dagip.stats.r2 import r2_coefficient
 
@@ -26,7 +27,8 @@ parser.add_argument(
     'dataset',
     type=str,
     choices=[
-        'OV', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter', 'NIPT-sequencer',
+        'OV-forward', 'OV-backward', 'NIPT-chemistry',
+        'NIPT-lib', 'NIPT-adapter', 'NIPT-sequencer',
         'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000'
     ],
     help='Dataset name'
@@ -52,7 +54,7 @@ chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
 gc_content = df['GC.CONTENT'].to_numpy()
 
-if DATASET == 'OV':
+if DATASET in {'OV-forward', 'OV-backward'}:
     data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
 else:
     data = np.load(os.path.join(DATA_FOLDER, 'valpp.npz'), allow_pickle=True)
@@ -74,7 +76,7 @@ assert len(gc_codes) == len(set(gc_codes))
 
 # Load sample pairs
 idx1, idx2 = [], []
-if DATASET == 'OV':
+if DATASET in {'OV-forward', 'OV-backward'}:
     with open(os.path.join(DATA_FOLDER, 'control-and-ov-pairs.txt'), 'r') as f:
         lines = f.readlines()[1:]
     for line in lines:
@@ -87,6 +89,8 @@ if DATASET == 'OV':
                 continue
             i = gc_code_dict[elements[0]]
             j = gc_code_dict[elements[1]]
+            if DATASET == 'OV-backward':
+                i, j = j, i
             idx1.append(i)
             idx2.append(j)
 else:
@@ -128,6 +132,7 @@ bounds = compute_theoretical_bounds(
 
 print(f'Theoretical bounds: {bounds}')
 
+
 gc_content = ChromosomeBounds.bin_from_10kb_to_1mb(gc_content)
 mappability = ChromosomeBounds.bin_from_10kb_to_1mb(mappability)
 chrids = np.round(ChromosomeBounds.bin_from_10kb_to_1mb(chrids)).astype(int)
@@ -145,9 +150,13 @@ if METHOD == 'rf-da':
     side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
     folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted[idx1] = ot_da(
-        folder, X[idx1], X_adapted[idx2], side_info,
-        convergence_threshold=0.5,
-        max_n_iter=200
+        folder,
+        X[idx1],
+        X_adapted[idx2],
+        ret=GIPRetraction(side_info[:, 0]),
+        # reg_rate=0,
+        # convergence_threshold=1.0,
+        max_n_iter=50
     )
 elif METHOD == 'gc-correction':
     X_adapted = gc_correction(X, gc_content)
@@ -171,25 +180,7 @@ D_old = cdist(X[idx1, :], X[idx2, :])
 
 r2 = r2_coefficient(X_adapted[idx1], X_adapted[idx2])
 
-"""
-xs, ys, zs, pvalues = [], [], [], []
-for j in range(X.shape[1]):
-    try:
-        res = linregress(X_adapted[idx1, j], X_adapted[idx2, j])
-        xs.append(res.intercept)
-        ys.append(res.slope)
-        pvalues.append(res.pvalue)
-        zs.append(gc_content[j])
-    except ValueError:
-        pass
-xs, ys, zs, pvalues = np.asarray(xs), np.asarray(ys), np.asarray(zs), np.asarray(pvalues)
-mask = np.logical_and(zs > 0.3, zs < 0.95)
-plt.scatter(zs[mask], pvalues[mask], alpha=0.2)
-plt.yscale('log')
-plt.show()
-"""
-
-correct = np.arange(len(idx1)) == np.argmin(D, axis=0)
+correct = (np.arange(len(idx1)) == np.argmin(D, axis=0))
 misassigned_pairs = []
 for i in range(len(correct)):
     if not correct[i]:

@@ -22,8 +22,9 @@
 from typing import Dict
 
 
-def log_(message: str):
-    print(f'[DAGIP] {message}')
+def log_(message: str, verbose: bool = True):
+    if verbose:
+        print(f'[DAGIP] {message}')
 
 
 class LaTeXTable:
