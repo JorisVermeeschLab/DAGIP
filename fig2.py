@@ -6,12 +6,13 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from scipy.stats import pearsonr, ks_2samp
 from sklearn.decomposition import KernelPCA
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import RobustScaler, LabelEncoder
 
 from dagip.core import ot_da, transport_plan
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.retraction import GIPRetraction
+
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
@@ -37,87 +38,60 @@ chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
 gc_content = df['GC.CONTENT'].to_numpy()
 
-if DATASET == 'HEMA':
-    data = np.load(os.path.join(DATA_FOLDER, 'hema.npz'), allow_pickle=True)
-elif DATASET == 'OV':
-    data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
+# Load data
+if DATASET in {'OV-forward', 'OV-backward'}:
+    filename = 'OV.npz'
+elif DATASET == 'HEMA':
+    filename = 'HEMA.npz'
 else:
-    data = np.load(os.path.join(DATA_FOLDER, 'valpp.npz'), allow_pickle=True)
-
+    filename = 'NIPT.npz'
+data = np.load(os.path.join(ROOT, DATA_FOLDER, filename), allow_pickle=True)
 gc_codes = data['gc_codes']
+paired_with = data['paired_with']
 X = data['X']
-labels = data['labels']
+labels = data['y']
+d = data['d']
+
+print(X.shape, gc_content.shape)
 
 # Remove failed samples
-n_reads = np.asarray([int(x['unpaired-reads']) for x in data['metadata']], dtype=int)
-mask = (n_reads > 3000000)
-X, gc_codes, labels = X[mask], gc_codes[mask], labels[mask]
+#n_reads = data['num_reads']
+#mask = (n_reads > 3000000)
+#X, gc_codes, labels, d, paired_with = X[mask], gc_codes[mask], labels[mask], d[mask], paired_with[mask]
 
-gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
 medians = np.median(X, axis=1)
 mask = (medians > 0)
 X[mask] /= medians[mask, np.newaxis]
 
-assert len(gc_codes) == len(set(gc_codes))
+gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
 
-# Load sample pairs
-idx1, idx2 = [], []
 if DATASET == 'HEMA':
-    for i, (label, gc_code) in enumerate(zip(labels, gc_codes)):
-        pool_id = gc_code.split('-')[0]
-        if label == 'GRP':
-            idx2.append(i)
-        elif label == 'GRP_newlib':
-            idx1.append(i)
-elif DATASET == 'OV':
-    with open(os.path.join(DATA_FOLDER, 'control-and-ov-pairs.txt'), 'r') as f:
-        lines = f.readlines()[1:]
-    for line in lines:
-        elements = line.rstrip().split()
-        if len(elements) > 1:
-            if not ((elements[0] in gc_code_dict) and (elements[1] in gc_code_dict)):
-                # print(f'Could not load sample pair {elements}')
+    idx1 = np.where(np.logical_and(d == 'D7', labels == 'Healthy'))[0]
+    idx2 = np.where(np.logical_and(d == 'D8', labels == 'Healthy'))[0]
+else:
+    idx1, idx2 = [], []
+    for i in range(len(X)):
+        if paired_with[i]:
+            if (DATASET == 'OV') and (labels[i] != 'OV'):
                 continue
-            if elements[0].startswith('healthy_control'):  # TODO
-                continue
-            i = gc_code_dict[elements[0]]
-            j = gc_code_dict[elements[1]]
+            j = gc_code_dict[paired_with[i]]
             idx1.append(i)
             idx2.append(j)
-else:
-    print(DATASET, 'NIPT-hs2000', DATASET == 'NIPT-hs2000')
-    if DATASET == 'NIPT-chemistry':
-        filename = 'chemistry-validation.tsv'
-    elif DATASET == 'NIPT-adapter':
-        filename = 'kapa-vs-idt.tsv'
-    elif DATASET == 'NIPT-lib':
-        filename = 'nano-vs-kapa.tsv'
-    elif DATASET == 'NIPT-hs2000':
-        filename = 'hs2000-vs-novaseq.tsv'
-    elif DATASET == 'NIPT-hs2500':
-        filename = 'hs2500-vs-novaseq.tsv'
-    elif DATASET == 'NIPT-hs4000':
-        filename = 'hs4000-vs-novaseq.tsv'
-    else:
-        raise NotImplementedError(f'Unknown dataset "{DATASET}"')
-    nipt_mapping = {}
-    with open(os.path.join(DATA_FOLDER, filename), 'r') as f:
-        lines = f.readlines()[1:]
-    for line in lines:
-        line = line.rstrip()
-        if len(line) > 2:
-            elements = line.split()
-            if (elements[0] in gc_code_dict) and (elements[1] in gc_code_dict):
-               idx1.append(gc_code_dict[elements[0]])
-               idx2.append(gc_code_dict[elements[1]])
-idx1 = np.asarray(idx1)
-idx2 = np.asarray(idx2)
+    idx1 = np.asarray(idx1, dtype=int)
+    idx2 = np.asarray(idx2, dtype=int)
+
+#if DATASET == 'HEMA':
+#
+#    'OV', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter',
+#        'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000'
 
 X = ChromosomeBounds.bin_from_10kb_to_1mb(X)
 gc_content = ChromosomeBounds.bin_from_10kb_to_1mb(gc_content)
 mappability = ChromosomeBounds.bin_from_10kb_to_1mb(mappability)
 centromeric = ChromosomeBounds.bin_from_10kb_to_1mb(centromeric)
 chrids = ChromosomeBounds.bin_from_10kb_to_1mb(chrids)
+
+print(X.shape, gc_content.shape)
 
 # GC correction
 X_gc_corrected = gc_correction(X, gc_content)
@@ -136,6 +110,11 @@ if not os.path.exists(f'{DATASET}-corrected.npy'):
     X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], ret=ret)
     np.save(f'{DATASET}-corrected.npy', X_adapted)
 X_adapted = np.load(f'{DATASET}-corrected.npy')
+
+#X = RobustScaler().fit_transform(X)
+#X_adapted = RobustScaler().fit_transform(X_adapted)
+#X_ces = RobustScaler().fit_transform(X_ces)
+#X_gc_corrected = RobustScaler().fit_transform(X_gc_corrected)
 
 settings = [(0, 0, X[idx1, :], X[idx2, :], 'No correction')]
 settings.append((0, 1, X_gc_corrected[idx1, :], X_gc_corrected[idx2, :], 'GC correction'))
@@ -169,6 +148,8 @@ for kk, (i, j, X1, X2, title) in enumerate(settings):
                 color='black', marker='D'
             )
 plt.tight_layout()
+if not os.path.isdir(OUT_FOLDER):
+    os.makedirs(OUT_FOLDER)
 plt.savefig(os.path.join(OUT_FOLDER, f'{DATASET}-gc-bias-by-method.png'), dpi=150, transparent=True)
 plt.clf()
 plt.close()
@@ -183,12 +164,33 @@ ax[0, 0].text(0.45, 0.90, '(B)', weight='bold', fontsize=numb_fontsize, transfor
 ax[0, 0].text(0.70, 0.90, '(C)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
 ax[0, 0].text(0.70, 0.45, '(D)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
 
+if DATASET == 'HEMA':
+    d1, d2 = '7', '8'
+elif DATASET == 'OV':
+    d1, d2 = '9', '10'
+elif DATASET == 'NIPT-chemistry':
+    d1, d2 = '6,a', '6,b'
+elif DATASET == 'NIPT-lib':
+    d1, d2 = '1,a', '1,b'
+elif DATASET == 'NIPT-adapter':
+    d1, d2 = '2,a', '2,b'
+elif DATASET == 'NIPT-hs2000':
+    d1, d2 = '3,a', '3,b'
+elif DATASET == 'NIPT-hs2500':
+    d1, d2 = '4,a', '4,b'
+elif DATASET == 'NIPT-hs4000':
+    d1, d2 = '5,a', '5,b'
+else:
+    raise NotImplementedError(f'Unknown dataset "{DATASET}"')
 for i, j, X1, X2, title in settings:
     print(len(X1), len(X2))
     pca = KernelPCA(n_components=2)
     pca.fit(np.concatenate((X1, X2), axis=0))
     coords = pca.transform(X1)
-    ax[i, j].scatter(coords[:, 0], coords[:, 1], color='darkgoldenrod', alpha=alpha, s=size, label=r'Healthy ($\mathcal{D}_4$)')
+    ax[i, j].scatter(
+        coords[:, 0], coords[:, 1], color='darkgoldenrod', alpha=alpha, s=size,
+        # label=r'Healthy ($\mathcal{D}_{' + d1 + r'}$)'
+    )
     ax[i, j].set_xlabel('First principal component')
     if j == 0:
         ax[i, j].set_ylabel('Second principal component')
@@ -196,7 +198,10 @@ for i, j, X1, X2, title in settings:
     ax[i, j].spines['right'].set_visible(False)
     ax[i, j].spines['top'].set_visible(False)
     coords = pca.transform(X2)
-    ax[i, j].scatter(coords[:, 0], coords[:, 1], color='darkcyan', alpha=alpha, s=size, label=r'Healthy ($\mathcal{D}_3$)')
+    ax[i, j].scatter(
+        coords[:, 0], coords[:, 1], color='darkcyan', alpha=alpha, s=size,
+        # label=r'Healthy ($\mathcal{D}_{' + d2 + r'}$)'
+    )
     if (i, j) == (0, 0):
         ax[i, j].legend(prop={'size': 8})
 
@@ -268,24 +273,6 @@ print('pearson GC correction', r)
 scaler = RobustScaler()
 scaler.fit(X_adapted[idx2])
 gamma = transport_plan(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
-if DATASET == 'HEMA':
-    d1, d2 = 7, 8
-elif DATASET == 'OV':
-    d1, d2 = 9, 10
-elif DATASET == 'NIPT-chemistry':
-    d1, d2 = '6,a', '6,b'
-elif DATASET == 'NIPT-lib':
-    d1, d2 = '1,a', '1,b'
-elif DATASET == 'NIPT-adapter':
-    d1, d2 = '2,a', '2,b'
-elif DATASET == 'NIPT-hs2000':
-    d1, d2 = '3,a', '3,b'
-elif DATASET == 'NIPT-hs2500':
-    d1, d2 = '4,a', '4,b'
-elif DATASET == 'NIPT-hs4000':
-    d1, d2 = '5,a', '5,b'
-else:
-    raise NotImplementedError(f'Unknown dataset "{DATASET}"')
 unique, counts = np.unique(np.sum(gamma > 1e-5, axis=0), return_counts=True)
 ax[1, 5].bar(
     unique - 0.15, counts, color='darkgoldenrod', width=0.3,

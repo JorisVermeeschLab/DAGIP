@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import LabelEncoder
 
 from dagip.benchmark.baseline import BaselineMethod
 from dagip.benchmark.centering_scaling import CenteringScaling
@@ -10,6 +11,7 @@ from dagip.benchmark.gc_correction import GCCorrection
 from dagip.benchmark.rf_da import RFDomainAdaptation
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.validation.k_fold import KFoldValidation
+
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
@@ -34,116 +36,40 @@ chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
 gc_content = df['GC.CONTENT'].to_numpy()
 
-# Load sequencer information
-with open(os.path.join(ROOT, DATA_FOLDER, 'nipt_adaptor_machine.csv'), 'r') as f:
-    lines = f.readlines()[1:]
-sequencer_machine_info = {}
-for line in lines:
-    elements = line.rstrip().split(',')
-    if len(elements) > 1:
-        try:
-            sequencer_machine_info[elements[0]] = (elements[1], elements[2])
-        except NotImplementedError:
-            pass
-
-# Load detailed annotations
-annotations = {}
-with open(os.path.join(ROOT, DATA_FOLDER, 'Sample_Disease_Annotation_toAntoine_20211026.tsv'), 'r') as f:
-    lines = f.readlines()[1:]
-for line in lines:
-    elements = line.rstrip().split('\t')
-    if len(elements) > 1:
-        annotations[elements[0]] = elements[2]
-
-if DATASET in {'OV-forward', 'OV-backward'}:
-    data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
-else:
-    data = np.load(os.path.join(DATA_FOLDER, 'hema.npz'), allow_pickle=True)
-
-    if DATASET == 'MM':
-        whitelist = {'MM', 'GRP', 'GRP_newlib'}
-    elif DATASET == 'DLBCL':
-        whitelist = {'DLBCL', 'GRP', 'GRP_newlib'}
-    elif DATASET == 'HL':
-        whitelist = {'HL', 'GRP', 'GRP_newlib'}
-    elif DATASET == 'HEMA':
-        whitelist = {'HL', 'DLBCL', 'MM', 'GRP', 'GRP_newlib'}
-    else:
-        raise NotImplementedError()
-    idx = []
-    for i in range(len(data['X'])):
-        if data['labels'][i] in whitelist:
-            idx.append(i)
-    idx = np.asarray(idx)
-    data_ = {}
-    for attr in ['X', 'gc_codes', 'labels', 'metadata']:
-        data_[attr] = data[attr]
-    data = data_
-    for attr in ['X', 'gc_codes', 'labels', 'metadata']:
-        data[attr] = data[attr][idx]
-
+# Load data
+filename = 'OV.npz' if (DATASET in {'OV-forward', 'OV-backward'}) else 'HEMA.npz'
+data = np.load(os.path.join(ROOT, DATA_FOLDER, filename), allow_pickle=True)
 gc_codes = data['gc_codes']
+gc_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
 X = data['X']
-assert len(gc_codes) == len(set(gc_codes))
-
 X /= np.median(X, axis=1)[:, np.newaxis]
+y = data['y']
+d = np.squeeze(LabelEncoder().fit_transform(data['d'][:, np.newaxis]))
+t = data['t']
+groups = np.squeeze(LabelEncoder().fit_transform(data['groups'][:, np.newaxis]))
 
-t, y, d = [], [], []
-if DATASET in {'OV-forward', 'OV-backward'}:
-
-    gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
-    with open(os.path.join(DATA_FOLDER, 'control-and-ov-pairs.txt'), 'r') as f:
-        lines = f.readlines()[1:]
-    mapping = {}
-    for line in lines:
-        elements = line.rstrip().split()
-        if len(elements) > 1:
-            if not ((elements[0] in gc_code_dict) and (elements[1] in gc_code_dict)):
-                # print(f'Could not load sample pair {elements}')
-                continue
-            mapping[elements[0]] = elements[1]
-            mapping[elements[1]] = elements[0]
-
-    current_group = 0
-    groups = {}
-    for label, gc_code in zip(data['labels'], data['gc_codes']):
-        if gc_code.startswith('GC'):
-            pool_id = gc_code.split('-')[0]
-            indexes, sequencer = sequencer_machine_info[pool_id]
-            t.append(f'{indexes}-{sequencer}')
-        else:
-            t.append('external')
-        if DATASET == 'OV-forward':
-            d.append(gc_code.startswith('GC'))
-        else:
-            d.append(not gc_code.startswith('GC'))
-        y.append(label != 'control')
-        if (gc_code in mapping) and (mapping[gc_code] in groups):
-            groups[gc_code] = groups[mapping[gc_code]]
-        else:
-            groups[gc_code] = current_group
-            current_group += 1
-    groups = np.asarray([groups[gc_code] for gc_code in gc_codes])
+# Define labels
+if DATASET == 'OV-forward':
+    y = (y == 'OV').astype(int)
+elif DATASET == 'OV-backward':
+    d = 1 - d
+    y = (y == 'OV').astype(int)
+elif DATASET == 'HEMA':
+    y = (y != 'Healthy').astype(int)
 else:
-    for label, gc_code in zip(data['labels'], data['gc_codes']):
-        pool_id = gc_code.split('-')[0]
-        indexes, sequencer = sequencer_machine_info[pool_id]
-        t.append(f'{indexes}-{sequencer}')
-        d.append('_newlib' in label)
-        y.append(label == DATASET)
-        assert DATASET in {'HL', 'MM', 'DLBCL', 'HEMA'}
-    groups = None
-t = np.asarray(t, dtype=object)
-y = np.asarray(y, dtype=int)
-d = np.asarray(d, dtype=int)
+    y = (y == DATASET).astype(int)
+assert np.all(d < 2)
+
+# Ensure there is at least one cancer case in the reference domain.
+# Otherwise, swap domains.
+if not np.any(y[d == 0]):
+    d = 1 - d
 
 X = ChromosomeBounds.bin_from_10kb_to_1mb(X)
 gc_content = ChromosomeBounds.bin_from_10kb_to_1mb(gc_content)
 mappability = ChromosomeBounds.bin_from_10kb_to_1mb(mappability)
 chrids = np.round(ChromosomeBounds.bin_from_10kb_to_1mb(chrids)).astype(int)
 centromeric = (ChromosomeBounds.bin_from_10kb_to_1mb(centromeric) > 0)
-
-print(gc_content.shape, mappability.shape)
 side_info = np.asarray([gc_content, mappability, centromeric, chrids])
 
 validation = KFoldValidation(

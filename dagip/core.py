@@ -235,7 +235,7 @@ def ot_da(
         speed = float(np.clip(speed, 0.1, 10))
         last = (loss + reg_rate * reg).item()
 
-        losses.append([loss.item(), reg.item()])
+        losses.append([float(loss.item()), float(reg.item())])
         # print(last, losses[-1])
         # print((loss + reg).item(), loss.item(), reg.item(), len(X1), len(X2))
 
@@ -248,7 +248,7 @@ def ot_da(
         if (iteration > 20) and (iteration % 20 == 0):
             reg_rate = max(1, reg_rate * 0.9)
 
-    losses = np.asarray(losses)
+    losses = np.asarray(losses, dtype=float)
 
     X1_corrected = X1_corrected.cpu().data.numpy()
 
@@ -317,7 +317,7 @@ def ot_da(
         plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4)
         plt.savefig(os.path.join(folder, 'kpca.png'), dpi=300)
         plt.clf()
-    except ValueError:
+    except (ValueError, IndexError):
         pass
 
     return X1_corrected

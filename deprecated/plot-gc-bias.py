@@ -42,24 +42,10 @@ for line in lines:
         except NotImplementedError:
             pass
 
-data = np.load(os.path.join(DATA_FOLDER, 'val.npz'), allow_pickle=True)
+data = np.load(os.path.join(DATA_FOLDER, 'NIPT.npz'), allow_pickle=True)
 gc_codes = data['gc_codes']
 X = data['X']
 labels = data['labels']
-
-# Remove outliers
-diff = np.mean((X - np.median(X, axis=0)[np.newaxis, :]) ** 2., axis=1)
-idx = (diff < 3)
-X = X[idx]
-gc_codes = gc_codes[idx]
-labels = labels[idx]
-
-medians = np.median(X, axis=1)
-mask = (medians > 0)
-X[mask, :] /= medians[mask, np.newaxis]
-X[X >= 2] = 2
-
-print(X.shape)
 
 X = gc_correction(X, gc_content)
 

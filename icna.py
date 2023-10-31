@@ -28,48 +28,14 @@ chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
 gc_content = df['GC.CONTENT'].to_numpy()
 
-# Load sequencer information
-with open(os.path.join(ROOT, DATA_FOLDER, 'nipt_adaptor_machine.csv'), 'r') as f:
-    lines = f.readlines()[1:]
-sequencer_machine_info = {}
-for line in lines:
-    elements = line.rstrip().split(',')
-    if len(elements) > 1:
-        try:
-            sequencer_machine_info[elements[0]] = (elements[1], elements[2])
-        except NotImplementedError:
-            pass
-
-# Load detailed annotations
-annotations = {}
-with open(os.path.join(ROOT, DATA_FOLDER, 'Sample_Disease_Annotation_toAntoine_20211026.tsv'), 'r') as f:
-    lines = f.readlines()[1:]
-for line in lines:
-    elements = line.rstrip().split('\t')
-    if len(elements) > 1:
-        annotations[elements[0]] = elements[2]
-
-data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
-
+# Load data
+data = np.load(os.path.join(DATA_FOLDER, 'OV.npz'), allow_pickle=True)
 gc_codes = data['gc_codes']
 X = data['X']
-assert len(gc_codes) == len(set(gc_codes))
-
 X /= np.median(X, axis=1)[:, np.newaxis]
-
-t, y, d = [], [], []
-for label, gc_code in zip(data['labels'], data['gc_codes']):
-    if gc_code.startswith('GC'):
-        pool_id = gc_code.split('-')[0]
-        indexes, sequencer = sequencer_machine_info[pool_id]
-        t.append(f'{indexes}-{sequencer}')
-    else:
-        t.append('external')
-    d.append(gc_code.startswith('GC'))
-    y.append(label != 'control')
-t = np.asarray(t, dtype=object)
-y = np.asarray(y, dtype=int)
-d = np.asarray(d, dtype=int)
+y = (data['y'] == 'OV').astype(int)
+t = data['t']
+d = (data['d'] == 'D9').astype(int)
 
 # Binning: 10 kb -> 1 mb
 X = ChromosomeBounds.bin_from_10kb_to_1mb(X)

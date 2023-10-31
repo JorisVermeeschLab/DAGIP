@@ -7,6 +7,9 @@
 *.npz
 *.filepart
 
+figures/
+ichor-cna-results/
+
 .idea/
 *.egg-info/
 venv/

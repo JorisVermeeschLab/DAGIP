@@ -18,6 +18,7 @@ from dagip.retraction import GIPRetraction
 from dagip.stats.bounds import compute_theoretical_bounds
 from dagip.stats.r2 import r2_coefficient
 
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, 'data')
 
@@ -36,7 +37,7 @@ parser.add_argument(
 parser.add_argument(
     'method',
     type=str,
-    choices=['none', 'centering-scaling', 'gc-correction', 'rf-da'],
+    choices=['none', 'centering-scaling', 'gc-correction', 'ot'],
     help='Correction method'
 )
 args = parser.parse_args()
@@ -54,74 +55,26 @@ chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
 gc_content = df['GC.CONTENT'].to_numpy()
 
+# Load data
 if DATASET in {'OV-forward', 'OV-backward'}:
-    data = np.load(os.path.join(DATA_FOLDER, 'ov.npz'), allow_pickle=True)
+    data = np.load(os.path.join(DATA_FOLDER, 'OV.npz'), allow_pickle=True)
 else:
-    data = np.load(os.path.join(DATA_FOLDER, 'valpp.npz'), allow_pickle=True)
-
+    data = np.load(os.path.join(DATA_FOLDER, 'NIPT.npz'), allow_pickle=True)
 gc_codes = data['gc_codes']
-X = data['X']
-
-# Remove failed samples
-n_reads = np.asarray([int(x['unpaired-reads']) for x in data['metadata']], dtype=int)
-mask = (n_reads > 3000000)
-X, gc_codes = X[mask], gc_codes[mask]
-
 gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
-medians = np.median(X, axis=1)
-mask = (medians > 0)
-X[mask] /= medians[mask, np.newaxis]
-
-assert len(gc_codes) == len(set(gc_codes))
+paired_with = data['paired_with']
+X = data['X']
+X /= np.median(X, axis=1)[:, np.newaxis]
 
 # Load sample pairs
 idx1, idx2 = [], []
-if DATASET in {'OV-forward', 'OV-backward'}:
-    with open(os.path.join(DATA_FOLDER, 'control-and-ov-pairs.txt'), 'r') as f:
-        lines = f.readlines()[1:]
-    for line in lines:
-        elements = line.rstrip().split()
-        if len(elements) > 1:
-            if not ((elements[0] in gc_code_dict) and (elements[1] in gc_code_dict)):
-                # print(f'Could not load sample pair {elements}')
-                continue
-            if elements[0].startswith('healthy_control'):  # TODO
-                continue
-            i = gc_code_dict[elements[0]]
-            j = gc_code_dict[elements[1]]
-            if DATASET == 'OV-backward':
-                i, j = j, i
-            idx1.append(i)
-            idx2.append(j)
-else:
-    print(DATASET, 'NIPT-hs2000', DATASET == 'NIPT-hs2000')
-    if DATASET == 'NIPT-chemistry':
-        filename = 'chemistry-validation.tsv'
-    elif DATASET == 'NIPT-adapter':
-        filename = 'kapa-vs-idt.tsv'
-    elif DATASET == 'NIPT-lib':
-        filename = 'nano-vs-kapa.tsv'
-    elif DATASET == 'NIPT-hs2000':
-        filename = 'hs2000-vs-novaseq.tsv'
-    elif DATASET == 'NIPT-hs2500':
-        filename = 'hs2500-vs-novaseq.tsv'
-    elif DATASET == 'NIPT-hs4000':
-        filename = 'hs4000-vs-novaseq.tsv'
-    else:
-        raise NotImplementedError(f'Unknown dataset "{DATASET}"')
-    nipt_mapping = {}
-    with open(os.path.join(DATA_FOLDER, filename), 'r') as f:
-        lines = f.readlines()[1:]
-    for line in lines:
-        line = line.rstrip()
-        if len(line) > 2:
-            elements = line.split()
-            if (elements[0] in gc_code_dict) and (elements[1] in gc_code_dict):
-               idx1.append(gc_code_dict[elements[0]])
-               idx2.append(gc_code_dict[elements[1]])
-idx1 = np.asarray(idx1)
-idx2 = np.asarray(idx2)
-assert len(idx1) == len(idx2)
+for i in range(len(X)):
+    if paired_with[i]:
+        j = gc_code_dict[paired_with[i]]
+        idx1.append(i)
+        idx2.append(j)
+idx1 = np.asarray(idx1, dtype=int)
+idx2 = np.asarray(idx2, dtype=int)
 
 print(f'Number of pairs: {len(idx1)}')
 
@@ -185,7 +138,7 @@ misassigned_pairs = []
 for i in range(len(correct)):
     if not correct[i]:
         misassigned_pairs.append((gc_codes[idx1[i]], gc_codes[idx2[i]]))
-print(f'Misassigned pairs: {misassigned_pairs}')
+# print(f'Misassigned pairs: {misassigned_pairs}')
 print(f'Precision: {np.mean(correct)} ({np.sum(correct)}/{len(correct)})')
 print(f'R2 coefficient: {r2}')
 

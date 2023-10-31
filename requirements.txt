@@ -1,5 +1,8 @@
+tqdm
 numpy
 scipy
+pandas
+matplotlib
 statsmodels
 POT
 torch
