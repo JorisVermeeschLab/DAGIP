@@ -57,6 +57,8 @@ elif DATASET == 'OV-backward':
 elif DATASET == 'HEMA':
     y = (y != 'Healthy').astype(int)
 else:
+    mask = np.asarray([label in {'Healthy', DATASET} for label in y], dtype=bool)
+    X, y, d, t, groups, gc_codes = X[mask], y[mask], d[mask], t[mask], groups[mask], gc_codes[mask]
     y = (y == DATASET).astype(int)
 assert np.all(d < 2)
 
@@ -81,9 +83,9 @@ validation = KFoldValidation(
 # validation = TrainTestValidation(X, y, d, t, side_info, gc_codes, target_domain=0, redo_binning=False)
 ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
 folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
-validation.validate(BaselineMethod())
-validation.validate(CenteringScaling())
-validation.validate(GCCorrection())
+#validation.validate(BaselineMethod())
+#validation.validate(CenteringScaling())
+#validation.validate(GCCorrection())
 validation.validate(RFDomainAdaptation(ichor_cna_location, folder, per_label=True))
 
 print(validation.table)

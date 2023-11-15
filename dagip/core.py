@@ -61,7 +61,7 @@ def pairwise_distances(
         X2: np.ndarray,
 ) -> np.ndarray:
     distances = cdist(X1, X2, metric='cityblock')
-    distances /= np.outer(np.mean(distances, axis=1), np.mean(distances, axis=0))
+    #distances /= np.outer(np.mean(distances, axis=1), np.mean(distances, axis=0))
     return distances
 
 
