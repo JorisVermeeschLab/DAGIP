@@ -28,12 +28,13 @@ from dagip.retraction.base import Manifold
 
 class GIPManifold(Manifold):
 
-    def __init__(self, gc_content: np.ndarray):
+    def __init__(self, gc_content: np.ndarray, frac: float = 0.3):
         self.gc_content = torch.FloatTensor((np.round(gc_content * 1000).astype(int) // 10).astype(float))
+        self.frac: float = frac
 
     def _transform(self, X: torch.Tensor) -> torch.Tensor:
         X = torch.exp(X)
-        return diff_gc_correction(X, self.gc_content)
+        return diff_gc_correction(X, self.gc_content, frac=self.frac)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
         X = torch.clamp(X, 1e-5, None)

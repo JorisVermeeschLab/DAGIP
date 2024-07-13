@@ -1,5 +1,5 @@
-Optimal transport
-=================
+Background
+==========
 
 .. math::
 

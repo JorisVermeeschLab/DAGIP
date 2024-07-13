@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-#  euclidean.py
+#  manhattan.py
 #
 #  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
@@ -24,7 +24,7 @@ import torch
 from dagip.spatial.base import BaseDistance
 
 
-class EuclideanDistance(BaseDistance):
+class ManhattanDistance(BaseDistance):
 
     def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
-        return torch.cdist(X, Y, p=2)
+        return torch.cdist(X, Y, p=1)

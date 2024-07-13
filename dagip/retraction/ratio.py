@@ -33,4 +33,5 @@ class RatioManifold(Manifold):
         return torch.sigmoid(X)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return torch.logit(X + self.eps)
+        X = torch.clamp(X, self.eps, 1.0 - self.eps)
+        return torch.logit(X)

@@ -20,7 +20,7 @@
 #  MA 02110-1301, USA.
 
 import os.path
-from typing import Tuple, Union, Callable, List
+from typing import Self, Optional, Tuple, Union, Callable, List, Dict
 
 import numpy as np
 import ot
@@ -32,6 +32,7 @@ from scipy.spatial.distance import cdist
 from sklearn.decomposition import KernelPCA
 from sklearn.manifold import TSNE
 from sklearn.svm import OneClassSVM
+from sklearn.base import BaseEstimator, TransformerMixin
 
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.nn.adapter import MLPAdapter
@@ -42,7 +43,7 @@ from dagip.retraction.base import Manifold
 from dagip.retraction.probability_simplex import ProbabilitySimplex
 from dagip.spatial.base import BaseDistance
 from dagip.spatial.euclidean import EuclideanDistance
-from dagip.spatial.kl_divergence import KLDivergence
+from dagip.spatial.manhattan import ManhattanDistance
 from dagip.utils import log_
 
 
@@ -77,12 +78,15 @@ def compute_p_values(X1: np.ndarray, X2: np.ndarray, u_test: Callable) -> np.nda
 
 
 def compute_s_values(X: torch.Tensor) -> torch.Tensor:
-    #scale = 1. / torch.clamp(torch.std(X, dim=0), 1e-9, None).unsqueeze(0)
-    #mu = torch.mean(X, dim=0).unsqueeze(0)
-    #return scale * (X - mu)
+
+    # Median
     mu = torch.quantile(X, 0.5, dim=0).unsqueeze(0)
+
+    # Inter-quartile range
     sigma = (torch.quantile(X, 0.75, dim=0) - torch.quantile(X, 0.25, dim=0)).unsqueeze(0)
     sigma = torch.clamp(sigma, 1e-9, None)
+
+    # Standardization
     scale = 1. / sigma
     return scale * (X - mu)
 
@@ -99,16 +103,20 @@ def barycentric_mapping(
 
 
 def _ot_da(
-        folder: str,
         X1: Union[np.ndarray, List[np.ndarray]],
         X2: Union[np.ndarray, List[np.ndarray]],
+        folder: Optional[str] = None,
         manifold: Manifold = Identity(),
+        prior_pairwise_distances: BaseDistance = ManhattanDistance(),
         pairwise_distances: BaseDistance = EuclideanDistance(),
         u_test: Callable = default_u_test,
-        reg_rate: float = 0.1,
-        max_n_iter: int = 4000,  # 1000
-        convergence_threshold: float = 0.5,
-        lr: float = 0.005,  # 0.0002
+        var_penalty: float = 0.01,  # 0.01
+        reg_rate: float = 0.1,  # 0.1
+        max_n_iter: int = 4000,  # 4000
+        convergence_threshold: float = 0.5,  # 0.5
+        nn_n_hidden: int = 32,  # 32
+        nn_n_layers: int 4,  # 4
+        lr: float = 0.005,  # 0.005
         verbose: bool = True
 ) -> Tuple[np.ndarray, MLPAdapter]:
 
@@ -135,6 +143,7 @@ def _ot_da(
     median_p_value = np.median(p_values)
     log_(f'Median p-value: {median_p_value}', verbose=verbose)
 
+    # Compute the order of magnitude of the bias
     X2_barycentric = barycentric_mapping(X1, X2)
     avg_deviation = np.mean(np.abs(X1 - X2_barycentric))
 
@@ -147,12 +156,11 @@ def _ot_da(
     gammas = []
     offset1, offset2 = 0, 0
     for size1, size2 in zip(block_sizes_1, block_sizes_2):
-        distances = torch.cdist(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2], p=1)
+        distances = prior_pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
         #distances = pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
         gammas.append(torch.FloatTensor(transport_plan(distances.cpu().data.numpy())))
 
-    n_hidden = 32
-    adapter = MLPAdapter(X1.size()[0], X1.size()[1], (n_hidden, n_hidden, n_hidden, n_hidden), manifold, eta=avg_deviation)
+    adapter = MLPAdapter(X1.size()[0], X1.size()[1], tuple([nn_n_hidden] * nn_n_layers), manifold, eta=avg_deviation)
     best_state_dict = adapter.state_dict()
     best_global_obj = 0.0
 
@@ -165,7 +173,7 @@ def _ot_da(
     variances = []
     losses = []
     median_p_values = []
-    pbar = tqdm.tqdm(range(max_n_iter), desc='OT')
+    pbar = tqdm.tqdm(range(max_n_iter), desc='OT', disable=(not verbose))
     for iteration in pbar:
 
         optimizer.zero_grad()
@@ -215,13 +223,8 @@ def _ot_da(
         loss3 = torch.mean(torch.square(diffs - target_diffs))
         loss3 = loss3_scaling(loss3)
 
-        # Regularization of the bias function
-        #X2_second = adapter(X2, manifold)
-        #loss4 = torch.mean(torch.square(X2_second - X2))
-        #loss4 = loss4_scaling(loss4)
-
         # Compute total loss function
-        total_loss = loss1 + 0.01 * loss2 + reg_rate * loss3
+        total_loss = loss1 + var_penalty * loss2 + reg_rate * loss3
 
         losses.append([loss1.item(), loss2.item(), loss3.item()])
 
@@ -352,8 +355,9 @@ def _ot_da(
 
     # Fix numerical issues
     mask = np.logical_or(np.isnan(X1_second), np.isinf(X1_second))
-    if np.any(mask):
-        print('WARNING: Output contains NaNs. Replacing them with original data.')
+    if verbose:
+        if np.any(mask):
+            print('WARNING: Output contains NaNs. Replacing them with original data.')
     X1_second[mask] = X1[mask]
 
     return X1_second, adapter
@@ -367,3 +371,23 @@ def ot_da(*args, **kwargs) -> np.ndarray:
 def train_adapter(*args, **kwargs) -> MLPAdapter:
     X1_second, adapter = _ot_da(*args, **kwargs)
     return adapter
+
+
+class DomainAdapter(BaseEstimator, TransformerMixin):
+
+    def __init__(self, **kwargs):
+        self.kwargs: Dict  = kwargs
+        self.adapter: Optional[MLPAdapter] = None
+
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> Self:
+        X_adapted, adapter = _ot_da(X, Y, **self.kwargs)
+        self.adapter = adapter
+        return self
+
+    def fit_transform(self, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+        X_adapted, adapter = _ot_da(X, Y, **self.kwargs)
+        self.adapter = adapter
+        return X_adapted
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        return self.adapter.adapt(X)

@@ -61,7 +61,7 @@ def read_counts_correction(x, gc_content, mappability, centromeric):
     return x
 
 
-def loess_correction(X: np.ndarray, exog: np.ndarray, desc: str, frac: float) -> np.ndarray:
+def lowess_correction(X: np.ndarray, exog: np.ndarray, desc: str, frac: float) -> np.ndarray:
     exog = np.round(exog * 1000).astype(int) // 10
     X_adapted = np.copy(X)
     for i in tqdm.tqdm(range(len(X)), desc=desc):
@@ -80,8 +80,8 @@ def loess_correction(X: np.ndarray, exog: np.ndarray, desc: str, frac: float) ->
 
 
 def mappability_correction(X: np.ndarray, mappability: np.ndarray) -> np.ndarray:
-    return loess_correction(X, mappability, 'Mappability correction', 2. / 3.)
+    return lowess_correction(X, mappability, 'Mappability correction', 2. / 3.)
 
 
-def gc_correction(X: np.ndarray, mappability: np.ndarray) -> np.ndarray:
-    return loess_correction(X, mappability, 'GC correction', 0.3)
+def gc_correction(X: np.ndarray, gc: np.ndarray, frac: float = 0.3) -> np.ndarray:
+    return lowess_correction(X, gc, 'GC correction', frac)
