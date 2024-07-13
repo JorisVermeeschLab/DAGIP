@@ -31,8 +31,6 @@ from matplotlib import pyplot as plt
 from scipy.spatial.distance import cdist
 from sklearn.decomposition import KernelPCA
 from sklearn.manifold import TSNE
-from sklearn.svm import OneClassSVM
-from sklearn.base import BaseEstimator, TransformerMixin
 
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.nn.adapter import MLPAdapter
@@ -373,21 +371,28 @@ def train_adapter(*args, **kwargs) -> MLPAdapter:
     return adapter
 
 
-class DomainAdapter(BaseEstimator, TransformerMixin):
+class DomainAdapter:
 
     def __init__(self, **kwargs):
         self.kwargs: Dict  = kwargs
         self.adapter: Optional[MLPAdapter] = None
 
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> Self:
+    def fit(self, X: Union[List[np.ndarray], np.ndarray], Y: Union[List[np.ndarray], np.ndarray]) -> Self:
         X_adapted, adapter = _ot_da(X, Y, **self.kwargs)
         self.adapter = adapter
         return self
 
-    def fit_transform(self, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    def fit_transform(self, X: Union[List[np.ndarray], np.ndarray], Y: Union[List[np.ndarray], np.ndarray]) -> Union[List[np.ndarray], np.ndarray]:
         X_adapted, adapter = _ot_da(X, Y, **self.kwargs)
         self.adapter = adapter
+        if isinstance(X, list):
+            ends = list(np.cumsum([len(mat) for mat in X]))
+            starts = [0] + ends[:-1]
+            X_adapted = [X_adapted[start:end] for start, end in zip(starts, ends)]
         return X_adapted
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
-        return self.adapter.adapt(X)
+    def transform(self, X: Union[List[np.ndarray]]) -> Union[List[np.ndarray]]:
+        if isinstance(X, list):
+            return [self.adapter.adapt(mat) for mat in X]
+        else:
+            return self.adapter.adapt(X)

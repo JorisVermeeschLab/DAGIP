@@ -27,6 +27,14 @@ In the general case, bias correction can be performed in the following way:
 
 The output ``X_adapted`` is the corrected version of ``X``. Correction is performed in such a way that ``X_adapted`` matches the distribution of ``Y``.
 
+Alternatively, the samples can be split into groups. For example, if male and female control cohorts are available, and you require males to be mapped to males exclusively (and vice versa), then lists of NumPy arrays can be provided instead. Another example is grouping the controls and cancer cases separately. The algorithm is called in the exact same way:
+
+.. code-block:: python
+
+    X_adapted = model.fit_transform(Xs, Ys)
+
+where ``Xs`` and ``Ys`` are lists of the same length. Each element is a NumPy array of arbitrary number of rows, and number of columns equal to ``q``.
+
 After inference, the trained model can be used to adapt any new sample in the source domain independently, without having recourse to any additional target cohort:
 
 .. code-block:: python
