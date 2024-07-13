@@ -31,7 +31,7 @@ import tqdm
 from scipy.spatial.distance import cdist
 
 from dagip.retraction import Identity
-from dagip.retraction.base import Retraction
+from dagip.retraction.base import Manifold
 
 
 def pairwise_distances(
@@ -80,7 +80,7 @@ def compute_p_values(X1: np.ndarray, X2: np.ndarray, u_test: Callable) -> np.nda
 def ot_da_discrete(
         X1: np.ndarray,
         X2_prime: np.ndarray,
-        ret: Retraction = Identity(),
+        ret: Manifold = Identity(),
         u_test: Callable = default_u_test,
         min_p_value: float = 0.1,
         max_n_iter: int = 1000,  # 1000,

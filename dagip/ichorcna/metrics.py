@@ -18,9 +18,9 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
+
 import functools
-from collections import Callable
-from typing import Tuple
+from typing import Tuple, Callable
 
 import matplotlib.pyplot as plt
 import numpy as np

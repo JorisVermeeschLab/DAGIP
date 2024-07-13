@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  base.py
 #
-#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,15 +19,24 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+from abc import ABCMeta, abstractmethod
+from typing import Union
+
+import numpy as np
 import torch
 
-from dagip.retraction.base import Manifold
 
+class BaseDistance(metaclass=ABCMeta):
 
-class Identity(Manifold):
+    def __call__(self, X: Union[np.ndarray, torch.Tensor], Y: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        if not torch.is_tensor(X):
+            X = torch.FloatTensor(X)
+        if not torch.is_tensor(Y):
+            Y = torch.FloatTensor(Y)
+        D = self.pairwise_distances(X, Y)
+        assert D.size() == (len(X), len(Y))
+        return D
 
-    def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
-
-    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+    @abstractmethod
+    def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        pass

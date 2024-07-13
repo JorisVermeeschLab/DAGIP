@@ -23,17 +23,18 @@ import numpy as np
 import torch
 
 from dagip.nn.gc_correction import diff_gc_correction
-from dagip.retraction.base import Retraction
+from dagip.retraction.base import Manifold
 
 
-class GIPRetraction(Retraction):
+class GIPManifold(Manifold):
 
     def __init__(self, gc_content: np.ndarray):
         self.gc_content = torch.FloatTensor((np.round(gc_content * 1000).astype(int) // 10).astype(float))
 
-    def _f1(self, X: torch.Tensor) -> torch.Tensor:
-        X = torch.clamp(X, 0)
-        return X / torch.median(X, dim=1).values.unsqueeze(1)
-
-    def _f2(self, X: torch.Tensor) -> torch.Tensor:
+    def _transform(self, X: torch.Tensor) -> torch.Tensor:
+        X = torch.exp(X)
         return diff_gc_correction(X, self.gc_content)
+
+    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
+        X = torch.clamp(X, 1e-5, None)
+        return torch.log(X)

@@ -11,6 +11,25 @@ from dagip.nipt.binning import ChromosomeBounds
 MARKERS = ['x', 'o', 's', 'P', 'D', 'h', '*', 'p', '8']
 
 
+def plot_ot_plan_degrees(ax, gamma: np.ndarray, eps: float = 1e-7):
+    unique, counts = np.unique(np.sum(gamma > eps, axis=0), return_counts=True)
+    ax.bar(
+        unique - 0.15, counts, color='darkgoldenrod', width=0.3,
+        label='Source domain'
+    )
+    unique2, counts = np.unique(np.sum(gamma > eps, axis=1), return_counts=True)
+    ax.bar(
+        unique2 + 0.15, counts, color='darkcyan', width=0.3,
+        label='Target domain'
+    )
+    ax.legend()
+    ax.set_xticks(range(1, max(max(unique), max(unique2)) + 1), range(1, max(max(unique), max(unique2)) + 1))
+    ax.set_xlabel(r'#Similar points in source domain')
+    ax.set_ylabel(r'#Points in target domain')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+
+
 def scatter_plot(X: np.ndarray, y: np.ndarray, d: np.ndarray):
     y = y.astype(float)
     coords = KernelPCA().fit_transform(X)

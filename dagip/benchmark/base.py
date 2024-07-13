@@ -23,6 +23,8 @@ from abc import abstractmethod, ABCMeta
 
 import numpy as np
 
+from dagip.retraction.base import Manifold
+
 
 class BaseMethod(metaclass=ABCMeta):
 
@@ -38,23 +40,15 @@ class BaseMethod(metaclass=ABCMeta):
     def adapt(
             self,
             X: np.ndarray,
-            X_uncorrected: np.ndarray,
             y: np.ndarray,
             d: np.ndarray,
-            t: np.ndarray,
-            side_info: np.ndarray,
             sample_names: np.ndarray,
             target_domain: int = 0
     ) -> np.ndarray:
         pass
 
     @abstractmethod
-    def adapt_sample_wise(
-            self,
-            X: np.ndarray,
-            t: np.ndarray,
-            side_info: np.ndarray
-    ) -> np.ndarray:
+    def adapt_sample_wise(self, X: np.ndarray) -> np.ndarray:
         pass
 
     @abstractmethod

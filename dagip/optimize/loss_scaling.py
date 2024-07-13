@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  loss_scaling.py
 #
-#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,15 +19,21 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+from typing import Optional
+
 import torch
 
-from dagip.retraction.base import Manifold
 
+class LossScaling(object):
 
-class Identity(Manifold):
+    def __init__(self):
+        self.scale: Optional[float] = None
 
-    def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
-
-    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+    def __call__(self, loss: torch.Tensor) -> torch.Tensor:
+        if self.scale is None:
+            value = loss.item()
+            if value == 0.0:
+                self.scale = 1.0
+            else:
+                self.scale = 1. / value
+        return self.scale * loss

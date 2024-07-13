@@ -2,6 +2,7 @@
 *.pyd
 *~
 .DS_Store
+*.slurm
 
 *.npy
 *.npz
@@ -9,6 +10,8 @@
 
 figures/
 ichor-cna-results/
+ichorCNA-master/
+tmp/
 
 .idea/
 *.egg-info/

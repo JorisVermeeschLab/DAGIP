@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  euclidean.py
 #
-#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,15 +19,14 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+from abc import abstractmethod
+
 import torch
 
-from dagip.retraction.base import Manifold
+from dagip.spatial.base import BaseDistance
 
 
-class Identity(Manifold):
+class EuclideanDistance(BaseDistance):
 
-    def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
-
-    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+    def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        return torch.cdist(X, Y, p=2)

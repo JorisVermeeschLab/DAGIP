@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  probability_simplex.py
 #
-#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -24,10 +24,14 @@ import torch
 from dagip.retraction.base import Manifold
 
 
-class Identity(Manifold):
+class ProbabilitySimplex(Manifold):
+
+    def __init__(self, eps: float = 1e-6):
+        self.eps: float = eps
 
     def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+        return torch.softmax(X, dim=1)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+        X = torch.clamp(X, self.eps, 1)
+        return torch.log(X)

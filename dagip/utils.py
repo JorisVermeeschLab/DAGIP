@@ -39,9 +39,9 @@ class LaTeXTable:
         for k in ['reglog', 'rf', 'svm']:
             sensitivity = f(results[k]['sensitivity-best'])
             specificity = f(results[k]['specificity-best'])
+            mcc = f(results[k]['mcc-best'])
             auroc = f(results[k]['auroc'])
             aupr = f(results[k]['aupr'])
-            mcc = f(results[k]['mcc-best'])
             self.s += f' & {sensitivity} \\% & {specificity} \\% & {mcc} \\% & {auroc} \\% & {aupr} \\%'
         self.s += ' \\\\\n'
 

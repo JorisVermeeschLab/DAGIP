@@ -20,8 +20,9 @@
 #  MA 02110-1301, USA.
 
 import warnings
+import collections
 from abc import abstractmethod, ABCMeta
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -39,31 +40,32 @@ from dagip.utils import LaTeXTable
 
 class CrossValidation(metaclass=ABCMeta):
 
-    PIPELINES = {
-        'svm': SVC(C=1, class_weight='balanced', probability=True),
+    PIPELINES = collections.OrderedDict({
+        'svm': SVC(C=1, class_weight='balanced', probability=True),  # 1
         'rf': RandomForestClassifier(max_depth=5, class_weight='balanced'),  # 5
         # 'knn': KNeighborsClassifier(weights='distance'),
         'reglog': LogisticRegression(C=1, class_weight='balanced', max_iter=10000)
-    }
+    })
 
     def __init__(
             self,
             X: np.ndarray,
             y: np.ndarray,
             d: np.ndarray,
-            t: np.ndarray,
-            side_info: np.ndarray,
             sample_names: np.ndarray,
             target_domain: int = 0,
-            redo_binning: bool = True
+            redo_binning: bool = True,
+            gc_content: Optional[np.ndarray] = None
     ):
         self.X: np.ndarray = X
-        self.side_info: np.ndarray = side_info
-        self.X_gc_corrected: np.ndarray = gc_correction(self.X, self.side_info[0, :])
+        self.gc_content: Optional[np.ndarray] = gc_content
+        if self.gc_content is not None:
+            self.X_gc_corrected: np.ndarray = gc_correction(self.X, self.gc_content)
+        else:
+            self.X_gc_corrected: np.ndarray = self.X
         self.y: np.ndarray = y
         self.d: np.ndarray = d
-        self.t: np.ndarray = t
-        self.sample_names: np.ndarray = sample_names
+        self.sample_names: np.ndarray = np.asarray(sample_names, dtype=object)
         self.target_domain: int = int(target_domain)
         self.redo_binning: bool = bool(redo_binning)
 
@@ -79,7 +81,6 @@ class CrossValidation(metaclass=ABCMeta):
 
         assert len(set(list(idx_train)).intersection(set(list(idx_test)))) == 0
 
-        t_train, t_test = self.t[idx_train], self.t[idx_test]
         d_train, d_test = self.d[idx_train], self.d[idx_test]
         assert len(np.unique(d_test)) == 1
         y_train, y_test = self.y[idx_train], self.y[idx_test]
@@ -89,16 +90,13 @@ class CrossValidation(metaclass=ABCMeta):
             X_train, X_test = self.X_gc_corrected[idx_train], self.X_gc_corrected[idx_test]
         else:
             X_train, X_test = self.X[idx_train], self.X[idx_test]
-        X_train_uncorrected = self.X[idx_train]
 
         # Shuffle training set
         six_train = np.arange(len(X_train))
         np.random.shuffle(six_train)
         X_train = X_train[six_train, :]
-        X_train_uncorrected = X_train_uncorrected[six_train, :]
         y_train = y_train[six_train]
         d_train = d_train[six_train]
-        t_train = t_train[six_train]
         sample_names_train = sample_names_train[six_train]
 
         # Shuffle test set
@@ -106,20 +104,16 @@ class CrossValidation(metaclass=ABCMeta):
         np.random.shuffle(six_test)
         X_test = X_test[six_test, :]
         y_test = y_test[six_test]
-        t_test = t_test[six_test]
 
         # Domain adaptation
         if da_method.sample_wise:
-            X_train = da_method.adapt_sample_wise(X_train, t_train, self.side_info)
-            X_test = da_method.adapt_sample_wise(X_test, t_test, self.side_info)
+            X_train = da_method.adapt_sample_wise(X_train)
+            X_test = da_method.adapt_sample_wise(X_test)
         else:
             X_train = da_method.adapt(
                 X_train,
-                X_train_uncorrected,
                 y_train,
                 d_train,
-                t_train,
-                self.side_info,
                 sample_names_train,
                 self.target_domain
             )
@@ -127,19 +121,12 @@ class CrossValidation(metaclass=ABCMeta):
         # Inverse-shuffle the training set
         six_train = np.argsort(six_train)
         X_train = X_train[six_train, :]
-        del X_train_uncorrected
         y_train = y_train[six_train]
 
         # Inverse-shuffle the test set
         six_test = np.argsort(six_test)
         X_test = X_test[six_test, :]
         y_test = y_test[six_test]
-
-        # Remove low-mappability bins
-        mappability = self.side_info[1, :]
-        mask = (mappability >= 0.8)
-        X_train = X_train[:, mask]
-        X_test = X_test[:, mask]
 
         # Standard scaling
         scaler = RobustScaler()
@@ -160,7 +147,7 @@ class CrossValidation(metaclass=ABCMeta):
         return y_pred[np.argmax(scores)]
 
     @staticmethod
-    def compute_evaluation_metrics(y_target: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    def compute_evaluation_metrics(y_target: np.ndarray, y_pred: np.ndarray, train: bool = False) -> Dict[str, float]:
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -176,7 +163,7 @@ class CrossValidation(metaclass=ABCMeta):
             specificity_best = np.nan_to_num(tn / (tn + fp))
             mcc_best = matthews_corrcoef(y_target, y_pred > threshold)
 
-        return {
+        results = {
             'sensitivity': sensitivity,
             'specificity': specificity,
             'mcc': mcc,
@@ -186,3 +173,6 @@ class CrossValidation(metaclass=ABCMeta):
             'auroc': roc_auc_score(y_target, y_pred),
             'aupr': average_precision_score(y_target, y_pred)
         }
+        if train:
+            results = {key + '-train': value for key, value in results.items()}
+        return results

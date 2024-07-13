@@ -2,3 +2,5 @@
 *.tsv
 *.zip
 *.csv
+*.wig
+*.json

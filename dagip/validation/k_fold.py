@@ -22,7 +22,8 @@
 from typing import Optional, Tuple, List
 
 import numpy as np
-from sklearn.model_selection import KFold
+import statsmodels.stats.api as sms
+from sklearn.model_selection import KFold, GroupKFold
 
 from dagip.benchmark.base import BaseMethod
 from dagip.validation.base import CrossValidation
@@ -36,19 +37,24 @@ class KFoldValidation(CrossValidation):
             n_splits: int = 5,
             n_repeats: int = 10,
             average_results: bool = True,
-            groups: Optional[np.ndarray],
+            groups: Optional[np.ndarray] = None,
+            random_state: Optional[int] = None,
             **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.n_splits: int = int(n_splits)
         self.n_repeats: int = int(n_repeats)
         self.average_results: bool = average_results
-        self.groups: np.ndarray = groups
+        self.groups: Optional[np.ndarray] = groups
+        self.random_state: Optional[int] = random_state
         self.splits: List[Tuple[np.ndarray, np.ndarray]] = self.make_splits()
 
     def make_splits(self) -> List[Tuple[np.ndarray, np.ndarray]]:
         idx = np.where(self.d == self.target_domain)[0]
-        kf = KFold(n_splits=self.n_splits, shuffle=True)
+        if self.groups is not None:
+            kf = GroupKFold(n_splits=self.n_splits)
+        else:
+            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
         splits = []
         for idx_train, idx_test in kf.split(idx, groups=(None if (self.groups is None) else self.groups[idx])):
             idx_train = idx[idx_train]
@@ -82,17 +88,23 @@ class KFoldValidation(CrossValidation):
 
     def validate_by_concatenating(self, da_method: BaseMethod):
 
-        results = {}
-
-        y_target = []
-        y_pred = {model_name: [] for model_name in CrossValidation.PIPELINES.keys()}
+        results_ = {}
+        for model_name in CrossValidation.PIPELINES.keys():
+            results_[model_name] = []
 
         for _ in range(self.n_repeats):
+
+            y_target_train = []
+            y_target = []
+            y_pred_train = {model_name: [] for model_name in CrossValidation.PIPELINES.keys()}
+            y_pred = {model_name: [] for model_name in CrossValidation.PIPELINES.keys()}
+
             self.splits = self.make_splits()
             for idx_train, idx_test in self.splits:
 
                 X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
 
+                y_target_train.append(y_train)
                 y_target.append(y_test)
 
                 for model_name, pipeline in CrossValidation.PIPELINES.items():
@@ -100,14 +112,29 @@ class KFoldValidation(CrossValidation):
                     # Train supervised model
                     pipeline.fit(X_train, y_train)
 
-                    # Predict on the held-out sample
+                    # Predict on training set
+                    y_pred_train[model_name].append(pipeline.predict_proba(X_train)[:, 1])
+
+                    # Predict on the held-out samples
                     y_pred[model_name].append(pipeline.predict_proba(X_test)[:, 1])
 
-        y_target = np.squeeze(np.concatenate(y_target, axis=0))
+            y_target_train = np.squeeze(np.concatenate(y_target_train, axis=0))
+            y_target = np.squeeze(np.concatenate(y_target, axis=0))
+            for model_name in CrossValidation.PIPELINES.keys():
+                y_pred_train[model_name] = np.squeeze(np.concatenate(y_pred_train[model_name], axis=0))
+                y_pred[model_name] = np.squeeze(np.concatenate(y_pred[model_name], axis=0))
+                results_[model_name].append(CrossValidation.compute_evaluation_metrics(y_target, y_pred[model_name]))
+                results_[model_name][-1].update(CrossValidation.compute_evaluation_metrics(y_target_train, y_pred_train[model_name], train=True))
+
+        results = {}
         for model_name in CrossValidation.PIPELINES.keys():
-            y_pred[model_name] = np.squeeze(np.concatenate(y_pred[model_name], axis=0))
-            results[model_name] = CrossValidation.compute_evaluation_metrics(y_target, y_pred[model_name])
+            results[model_name] = {}
+            for key in results_[model_name][0].keys():
+                values = [float(results_[model_name][i][key]) for i in range(len(results_[model_name]))]
+                results[model_name][key] = float(np.mean(values))
+                results[model_name][key + 'confint'] = sms.DescrStatsW(values).tconfint_mean()
             print(f'Validation results for "{model_name}": {results[model_name]}')
+
         self.table.add(da_method.name(), results)
 
         return results
@@ -136,10 +163,10 @@ class KFoldValidation(CrossValidation):
         for model_name in CrossValidation.PIPELINES.keys():
             results[model_name] = {}
             for key in results_[model_name][0].keys():
-                results[model_name][key] = 0
-                for i in range(len(results_[model_name])):
-                    results[model_name][key] += float(results_[model_name][i][key])
-                results[model_name][key] /= len(results_[model_name])
+                values = [float(results_[model_name][i][key]) for i in range(len(results_[model_name]))]
+                results[model_name][key] = float(np.mean(values))
+                print(sms.DescrStatsW(values).tconfint_mean())
+                results[model_name][key + 'confint'] = sms.DescrStatsW(values).tconfint_mean()
             print(f'Validation results for "{model_name}": {results[model_name]}')
         self.table.add(da_method.name(), results)
 

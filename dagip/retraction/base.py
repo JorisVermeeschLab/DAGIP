@@ -26,31 +26,27 @@ import numpy as np
 import torch
 
 
-class Retraction(metaclass=ABCMeta):
-    """Retraction mapping, implemented in two parts.
-
-    Original space ---f1---> Original space ---f2---> Manifold
-    """
+class Manifold(metaclass=ABCMeta):
 
     def __call__(self, X: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
-        return self.f2(self.f1(X))
+        return self.transform(self.inverse_transform(X))
 
-    def f1(self, X: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+    def transform(self, X: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
         if not torch.is_tensor(X):
             X = torch.FloatTensor(X)
-        X_prime = self._f1(X)
+        return self._transform(X)
+
+    @abstractmethod
+    def _transform(self, X: torch.Tensor) -> torch.Tensor:
+        pass
+
+    def inverse_transform(self, X: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        if not torch.is_tensor(X):
+            X = torch.FloatTensor(X)
+        X_prime = self._inverse_transform(X)
         assert X_prime.size() == X.size()
         return X_prime
 
     @abstractmethod
-    def _f1(self, X: torch.Tensor) -> torch.Tensor:
-        pass
-
-    def f2(self, X: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
-        if not torch.is_tensor(X):
-            X = torch.FloatTensor(X)
-        return self._f2(X)
-
-    @abstractmethod
-    def _f2(self, X: torch.Tensor) -> torch.Tensor:
+    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
         pass

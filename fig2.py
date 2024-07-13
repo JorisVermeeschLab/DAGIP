@@ -11,7 +11,7 @@ from sklearn.preprocessing import RobustScaler, LabelEncoder
 from dagip.core import ot_da, transport_plan
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
-from dagip.retraction import GIPRetraction
+from dagip.retraction import GIPManifold
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -106,8 +106,8 @@ if not os.path.exists(f'{DATASET}-corrected.npy'):
     folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted = np.copy(X_gc_corrected)
     side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
-    ret = GIPRetraction(side_info[:, 0])
-    X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], ret=ret)
+    ret = GIPManifold(side_info[:, 0])
+    X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], manifold=ret)
     np.save(f'{DATASET}-corrected.npy', X_adapted)
 X_adapted = np.load(f'{DATASET}-corrected.npy')
 

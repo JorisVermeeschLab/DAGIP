@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  ratio.py
 #
-#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -24,10 +24,13 @@ import torch
 from dagip.retraction.base import Manifold
 
 
-class Identity(Manifold):
+class RatioManifold(Manifold):
+
+    def __init__(self, eps: float = 1e-7):
+        self.eps: float = eps
 
     def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+        return torch.sigmoid(X)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+        return torch.logit(X + self.eps)

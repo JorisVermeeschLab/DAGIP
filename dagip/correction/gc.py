@@ -20,6 +20,8 @@
 #  MA 02110-1301, USA.
 
 import tqdm
+
+#import loess.loess_1d
 from statsmodels.nonparametric.smoothers_lowess import lowess
 import numpy as np
 
@@ -59,11 +61,15 @@ def read_counts_correction(x, gc_content, mappability, centromeric):
     return x
 
 
-def lowess_correction(X: np.ndarray, exog: np.ndarray, desc: str, frac: float) -> np.ndarray:
+def loess_correction(X: np.ndarray, exog: np.ndarray, desc: str, frac: float) -> np.ndarray:
     exog = np.round(exog * 1000).astype(int) // 10
     X_adapted = np.copy(X)
     for i in tqdm.tqdm(range(len(X)), desc=desc):
+
         y_pred = lowess(X[i, :], exog, frac=frac, return_sorted=False)
+        #_, y_pred, _ = loess.loess_1d(exos, X[i, :], xnew=None, degree=2, frac=0.3,
+        #                    npoints=None, rotate=False, sigy=None)
+
         mask = (y_pred > 0)
         X_adapted[i, mask] = X[i, mask] / y_pred[mask]
 
@@ -74,8 +80,8 @@ def lowess_correction(X: np.ndarray, exog: np.ndarray, desc: str, frac: float) -
 
 
 def mappability_correction(X: np.ndarray, mappability: np.ndarray) -> np.ndarray:
-    return lowess_correction(X, mappability, 'Mappability correction', 2. / 3.)
+    return loess_correction(X, mappability, 'Mappability correction', 2. / 3.)
 
 
 def gc_correction(X: np.ndarray, mappability: np.ndarray) -> np.ndarray:
-    return lowess_correction(X, mappability, 'GC correction', 0.3)
+    return loess_correction(X, mappability, 'GC correction', 0.3)

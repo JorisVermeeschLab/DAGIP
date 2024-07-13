@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  scaler.py
 #
 #  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
@@ -19,15 +19,24 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+import numpy as np
 import torch
 
-from dagip.retraction.base import Manifold
 
+class Scaler(torch.nn.Module):
 
-class Identity(Manifold):
+    def __init__(self, n_features, bias=True):
+        torch.nn.Module.__init__(self)
+        self.n_features = n_features
+        size = (1, self.n_features)
+        self.weight = torch.nn.Parameter(torch.ones(size))
+        if bias:
+            self.bias = torch.nn.Parameter(torch.zeros(size))
+        else:
+            self.bias = None
 
-    def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
-
-    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
+    def forward(self, X):
+        X = self.weight * X
+        if self.bias is not None:
+            X = X + self.bias
         return X

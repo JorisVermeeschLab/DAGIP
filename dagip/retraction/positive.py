@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-#  identity.py
+#  positive.py
 #
 #  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
@@ -19,15 +19,21 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+import numpy as np
 import torch
 
+from dagip.nn.gc_correction import diff_gc_correction
 from dagip.retraction.base import Manifold
 
 
-class Identity(Manifold):
+class Positive(Manifold):
+
+    def __init__(self, eps: float = 1e-5):
+        self.eps: float = eps
 
     def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+        return torch.exp(X)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        return X
+        X = torch.clamp(X, self.eps, None)
+        return torch.log(X)
