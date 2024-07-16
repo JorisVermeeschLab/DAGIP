@@ -71,6 +71,11 @@ def default_u_test(x1: np.ndarray, x2: np.ndarray) -> float:
 def compute_p_values(X1: np.ndarray, X2: np.ndarray, u_test: Callable) -> np.ndarray:
     p_values = []
     for k in range(X1.shape[1]):
+
+        # Check if feature is constant
+        if np.all(X1[:, k] == X1[0, k]) and np.all(X2[:, k] == X1[0, k]):
+            continue
+
         p_values.append(u_test(X1[:, k], X2[:, k]))
     return np.asarray(p_values)
 
@@ -82,7 +87,8 @@ def compute_s_values(X: torch.Tensor) -> torch.Tensor:
 
     # Inter-quartile range
     sigma = (torch.quantile(X, 0.75, dim=0) - torch.quantile(X, 0.25, dim=0)).unsqueeze(0)
-    sigma = torch.clamp(sigma, 1e-9, None)
+    mask = (sigma > 0)
+    sigma = mask * sigma + (~mask) * 1
 
     # Standardization
     scale = 1. / sigma
@@ -105,15 +111,14 @@ def _ot_da(
         X2: Union[np.ndarray, List[np.ndarray]],
         folder: Optional[str] = None,
         manifold: Manifold = Identity(),
-        prior_pairwise_distances: BaseDistance = ManhattanDistance(),
         pairwise_distances: BaseDistance = EuclideanDistance(),
         u_test: Callable = default_u_test,
-        var_penalty: float = 0.01,  # 0.01
-        reg_rate: float = 0.1,  # 0.1
+        var_penalty: float = 0.0,  # 0.01
+        reg_rate: float = 5,  # 0.1
         max_n_iter: int = 4000,  # 4000
         convergence_threshold: float = 0.5,  # 0.5
         nn_n_hidden: int = 32,  # 32
-        nn_n_layers: int 4,  # 4
+        nn_n_layers: int = 4,  # 4
         lr: float = 0.005,  # 0.005
         verbose: bool = True
 ) -> Tuple[np.ndarray, MLPAdapter]:
@@ -154,8 +159,7 @@ def _ot_da(
     gammas = []
     offset1, offset2 = 0, 0
     for size1, size2 in zip(block_sizes_1, block_sizes_2):
-        distances = prior_pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
-        #distances = pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
+        distances = pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
         gammas.append(torch.FloatTensor(transport_plan(distances.cpu().data.numpy())))
 
     adapter = MLPAdapter(X1.size()[0], X1.size()[1], tuple([nn_n_hidden] * nn_n_layers), manifold, eta=avg_deviation)
@@ -207,13 +211,16 @@ def _ot_da(
             loss1 = loss1 + torch.sum(gamma_ * torch.square(distances_)) * len(gamma_)
             norm = norm + len(gamma_)
         loss1 = loss1 / norm
-
         loss1 = loss1_scaling(loss1)
 
         # Encourage the variances to be identical
-        x1_variance = torch.mean(torch.var(X1_second, dim=0))
-        loss2 = torch.square(torch.sqrt(x1_variance) - np.sqrt(x2_variance))
-        loss2 = loss2_scaling(loss2)
+        if var_penalty > 0:
+            x1_variance = torch.mean(torch.var(X1_second, dim=0))
+            variances.append(x1_variance.item())
+            loss2 = torch.square(torch.sqrt(x1_variance) - np.sqrt(x2_variance))
+            loss2 = loss2_scaling(loss2)
+        else:
+            loss2 = torch.FloatTensor([0])
 
         # Regularization function
         X12 = torch.cat([X1_second, X2], dim=0)
@@ -226,10 +233,8 @@ def _ot_da(
 
         losses.append([loss1.item(), loss2.item(), loss3.item()])
 
-        variances.append(x1_variance.item())
-
         # Check convergence
-        p_values = compute_p_values(X1_second.cpu().data.numpy(), X2, u_test)
+        p_values = compute_p_values(X1_second.cpu().data.numpy(), X2.cpu().data.numpy(), u_test)
         median_p_values.append(float(np.median(p_values)))
         pbar.set_description(f'p={median_p_values[-1]:.3f}')
         if median_p_values[-1] >= convergence_threshold:
@@ -262,94 +267,97 @@ def _ot_da(
 
     X1_barycentric = barycentric_mapping(X1.cpu().data.numpy(), X2.cpu().data.numpy())
 
+    X2 = X2.cpu().data.numpy()
+
     # Save figures
-    try:
-        if not os.path.isdir(folder):
-            os.makedirs(folder)
+    if folder is not None:
+        try:
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
 
-        plt.plot(variances)
-        plt.axhline(y=x2_variance)
-        plt.xlabel('Iterations')
-        plt.ylabel('Total X1 variance')
-        plt.savefig(os.path.join(folder, 'total-variance.png'), dpi=300)
-        plt.clf()
-
-        p_values = compute_p_values(X1_second, X2, u_test)
-        log_(f'Median p-value after correction: {np.median(p_values)}', verbose=verbose)
-        plt.subplot(2, 1, 1)
-        plt.violinplot(p_values, vert=False, showmeans=True, showextrema=True)
-        plt.xlabel('p-value')
-        plt.subplot(2, 1, 2)
-        plt.violinplot(np.log(p_values), vert=False, showmeans=True, showextrema=True)
-        plt.xlabel('log(p-value)')
-        plt.savefig(os.path.join(folder, 'p-values-final.png'), dpi=300)
-        plt.clf()
-        plt.plot(p_values)
-        plt.xlabel('Bin')
-        plt.ylabel('p-value')
-        plt.savefig(os.path.join(folder, 'p-values.png'), dpi=300)
-        plt.clf()
-        plt.subplot(1, 2, 1)
-        plt.imshow(cdist(X1, X1))
-        plt.subplot(1, 2, 2)
-        plt.imshow(cdist(X1_second, X1_second))
-        plt.savefig(os.path.join(folder, 'D11.png'), dpi=400)
-        plt.clf()
-        plt.subplot(1, 2, 1)
-        plt.imshow(cdist(X1, X2))
-        plt.subplot(1, 2, 2)
-        plt.imshow(cdist(X1_second, X2))
-        plt.savefig(os.path.join(folder, 'D12.png'), dpi=400)
-        plt.clf()
-        plt.plot(median_p_values)
-        plt.xlabel('Iterations')
-        plt.ylabel('Median p-value')
-        plt.savefig(os.path.join(folder, 'median-p-values.png'), dpi=300)
-        plt.clf()
-        plt.plot(losses[:, 0], label='Loss')
-        plt.plot(losses[:, 1], label='Variance penalty')
-        plt.plot(losses[:, 2], label='Regularization')
-        #plt.plot(losses[:, 3], label='Bias function regularization')
-        plt.legend()
-        plt.xlabel('Iterations')
-        plt.ylabel('Loss function')
-        plt.savefig(os.path.join(folder, 'loss.png'), dpi=300)
-        plt.clf()
-
-        plt.imshow(gamma)
-        plt.savefig(os.path.join(folder, 'transport-plan.png'), dpi=300)
-        plt.clf()
-
-        ax = plt.subplot(1, 1, 1)
-        plot_ot_plan_degrees(ax, gamma)
-        plt.savefig(os.path.join(folder, 'transport-plan-degrees.png'), dpi=300)
-        plt.clf()
-
-        for transformer, filename in zip([KernelPCA(), TSNE()], ['kpca.png', 'tsne.png']):
-            plt.subplot(1, 2, 1)
-            coords = transformer.fit_transform(np.concatenate([X1, X2, X1_barycentric], axis=0))
-            plt.scatter(coords[:len(X1), 0], coords[:len(X1), 1], alpha=0.4)
-            plt.scatter(coords[len(X1):len(X1)+len(X2), 0], coords[len(X1):len(X1)+len(X2), 1], alpha=0.4)
-            plt.scatter(coords[len(X1) + len(X2):, 0], coords[len(X1) + len(X2):, 1], alpha=0.4, marker='x')
-            plt.subplot(1, 2, 2)
-            coords = transformer.fit_transform(np.concatenate([X1_second, X2, X1_barycentric], axis=0))
-            plt.scatter(coords[:len(X1), 0], coords[:len(X1), 1], alpha=0.4)
-            plt.scatter(coords[len(X1):len(X1)+len(X2), 0], coords[len(X1):len(X1)+len(X2), 1], alpha=0.4)
-            plt.scatter(coords[len(X1) + len(X2):, 0], coords[len(X1) + len(X2):, 1], alpha=0.4, marker='x')
-            plt.savefig(os.path.join(folder, filename), dpi=300)
+            plt.plot(variances)
+            plt.axhline(y=x2_variance)
+            plt.xlabel('Iterations')
+            plt.ylabel('Total X1 variance')
+            plt.savefig(os.path.join(folder, 'total-variance.png'), dpi=300)
             plt.clf()
 
-        transformer = KernelPCA()
-        coords = transformer.fit_transform(X1)
-        plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4, label='Original X1')
-        coords = transformer.transform(X0)
-        plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4, label='X1 at t=1')
-        plt.legend()
-        plt.savefig(os.path.join(folder, 'initial-X1.png'), dpi=300)
-        plt.clf()
+            p_values = compute_p_values(X1_second, X2, u_test)
+            log_(f'Median p-value after correction: {np.median(p_values)}', verbose=verbose)
+            plt.subplot(2, 1, 1)
+            plt.violinplot(p_values, vert=False, showmeans=True, showextrema=True)
+            plt.xlabel('p-value')
+            plt.subplot(2, 1, 2)
+            plt.violinplot(np.log(p_values), vert=False, showmeans=True, showextrema=True)
+            plt.xlabel('log(p-value)')
+            plt.savefig(os.path.join(folder, 'p-values-final.png'), dpi=300)
+            plt.clf()
+            plt.plot(p_values)
+            plt.xlabel('Bin')
+            plt.ylabel('p-value')
+            plt.savefig(os.path.join(folder, 'p-values.png'), dpi=300)
+            plt.clf()
+            plt.subplot(1, 2, 1)
+            plt.imshow(cdist(X1, X1))
+            plt.subplot(1, 2, 2)
+            plt.imshow(cdist(X1_second, X1_second))
+            plt.savefig(os.path.join(folder, 'D11.png'), dpi=400)
+            plt.clf()
+            plt.subplot(1, 2, 1)
+            plt.imshow(cdist(X1, X2))
+            plt.subplot(1, 2, 2)
+            plt.imshow(cdist(X1_second, X2))
+            plt.savefig(os.path.join(folder, 'D12.png'), dpi=400)
+            plt.clf()
+            plt.plot(median_p_values)
+            plt.xlabel('Iterations')
+            plt.ylabel('Median p-value')
+            plt.savefig(os.path.join(folder, 'median-p-values.png'), dpi=300)
+            plt.clf()
+            plt.plot(losses[:, 0], label='Loss')
+            plt.plot(losses[:, 1], label='Variance penalty')
+            plt.plot(losses[:, 2], label='Regularization')
+            #plt.plot(losses[:, 3], label='Bias function regularization')
+            plt.legend()
+            plt.xlabel('Iterations')
+            plt.ylabel('Loss function')
+            plt.savefig(os.path.join(folder, 'loss.png'), dpi=300)
+            plt.clf()
 
-    except (ValueError, IndexError):
-        pass
+            plt.imshow(gamma)
+            plt.savefig(os.path.join(folder, 'transport-plan.png'), dpi=300)
+            plt.clf()
+
+            ax = plt.subplot(1, 1, 1)
+            plot_ot_plan_degrees(ax, gamma)
+            plt.savefig(os.path.join(folder, 'transport-plan-degrees.png'), dpi=300)
+            plt.clf()
+
+            for transformer, filename in zip([KernelPCA(), TSNE()], ['kpca.png', 'tsne.png']):
+                plt.subplot(1, 2, 1)
+                coords = transformer.fit_transform(np.concatenate([X1, X2, X1_barycentric], axis=0))
+                plt.scatter(coords[:len(X1), 0], coords[:len(X1), 1], alpha=0.4)
+                plt.scatter(coords[len(X1):len(X1)+len(X2), 0], coords[len(X1):len(X1)+len(X2), 1], alpha=0.4)
+                plt.scatter(coords[len(X1) + len(X2):, 0], coords[len(X1) + len(X2):, 1], alpha=0.4, marker='x')
+                plt.subplot(1, 2, 2)
+                coords = transformer.fit_transform(np.concatenate([X1_second, X2, X1_barycentric], axis=0))
+                plt.scatter(coords[:len(X1), 0], coords[:len(X1), 1], alpha=0.4)
+                plt.scatter(coords[len(X1):len(X1)+len(X2), 0], coords[len(X1):len(X1)+len(X2), 1], alpha=0.4)
+                plt.scatter(coords[len(X1) + len(X2):, 0], coords[len(X1) + len(X2):, 1], alpha=0.4, marker='x')
+                plt.savefig(os.path.join(folder, filename), dpi=300)
+                plt.clf()
+
+            transformer = KernelPCA()
+            coords = transformer.fit_transform(X1)
+            plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4, label='Original X1')
+            coords = transformer.transform(X0)
+            plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4, label='X1 at t=1')
+            plt.legend()
+            plt.savefig(os.path.join(folder, 'initial-X1.png'), dpi=300)
+            plt.clf()
+
+        except (ValueError, IndexError):
+            pass
 
     # Fix numerical issues
     mask = np.logical_or(np.isnan(X1_second), np.isinf(X1_second))

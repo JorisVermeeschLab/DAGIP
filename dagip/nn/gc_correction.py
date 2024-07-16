@@ -41,9 +41,18 @@ class Lowess(torch.autograd.Function):
 
         out = torch.clone(endog)
         for i in range(len(endog)):
+            endog_i = endog[i, :].cpu().data.numpy()
+            exog_i = exog.cpu().data.numpy()
+
+            # Ignore NaNs and infs
+            mask = np.logical_or(np.isnan(endog_i), np.isinf(endog_i))
+            mask = ~np.logical_or(mask, endog_i == 0)
+
+            # LOWESS regression
             out[i, :] = torch.FloatTensor(lowess(
-                endog[i, :].cpu().data.numpy(),
-                exog.cpu().data.numpy(),
+                endog_i[mask],
+                exog_i[mask],
+                xvals=exog_i,
                 frac=frac,
                 return_sorted=False
             ))

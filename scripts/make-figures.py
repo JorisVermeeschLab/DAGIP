@@ -1,70 +1,88 @@
 import os
+import sys
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(ROOT, '..'))
+sys.path.append('/lustre1/project/stg_00019/research/Antoine/dependencies')
+
 import numpy as np
 import scipy.stats
 import pandas as pd
 import seaborn
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+from sklearn.preprocessing import RobustScaler
+
+from dagip.plot import plot_end_motif_freqs, scatterplot_with_sample_importances, loo_influence_analysis
+from dagip.stats.fisher import reglog_fisher_info
 
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(ROOT, '..', 'data')
+RESULTS_FOLDER = os.path.join(ROOT, '..', 'results')
 FIGURES_FOLDER = os.path.join(ROOT, '..', 'figures')
 os.makedirs(FIGURES_FOLDER, exist_ok=True)
 
 
-def load_folder(folder: str, lengths: bool = False) -> np.ndarray:
+def load_folder(folder: str) -> np.ndarray:
     X = []
     for filename in os.listdir(folder):
         filepath = os.path.join(folder, filename)
         df = pd.read_csv(filepath)
-        x = df['Count'].to_numpy()
-        if lengths:
-            x[:40] = 0
-        X.append(x / x.sum())
+        x = df.to_numpy()[:, -1]
+        if ('end-motif-frequencies' in folder) or ('fragment-length-distributions' in folder):
+            x = x / x.sum()
+        X.append(x)
     return np.asarray(X)
 
 
-def plot_end_motif_freqs(ax, x: np.ndarray):
-    xs, ys = np.arange(len(x)) + 0.5, x
-    plt.bar(xs[:64], ys[:64], color='royalblue')
-    plt.bar(xs[64:128], ys[64:128], color='gold')
-    plt.bar(xs[128:192], ys[128:192], color='coral')
-    plt.bar(xs[192:], ys[192:], color='mediumseagreen')
-    for side in ['right', 'top']:
-        ax.spines[side].set_visible(False)
-    ax.set_xticks(range(0, 257, 16), minor=True)
-    ax.set_xticklabels(['' for _ in range(17)], minor=True)
-    ax.set_xticks(np.arange(0, 256, 16) + 8, minor=False)
-    labels = ['AANN', 'ATNN', 'ACNN', 'AGNN', 'TANN', 'TTNN', 'TCNN', 'TGNN', 'CANN', 'CTNN', 'CCNN', 'CGNN', 'GANN', 'GTNN', 'GCNN', 'GGNN']
-    ax.set_xticklabels(labels, minor=False)
-    ax.grid(which='minor', alpha=0.8, linestyle='--', linewidth=0.8, color='black')
-    plt.axhline(y=0, linestyle='--', color='black', linewidth=0.5)
-    ax.set_ylabel('5\' end-motif frequency', fontsize=15)
+#MODALITY = 'end-motif-frequencies'
+MODALITY = 'long-fragment-ratio-profiles'
 
 
-X, y = [], []
-X.append(load_folder(os.path.join(DATA_FOLDER, 'D11', 'cases', 'end-motif-frequencies')))
-y += [0.0] * len(X[-1])
-X.append(load_folder(os.path.join(DATA_FOLDER, 'D11', 'controls', 'end-motif-frequencies')))
-y += [0.4] * len(X[-1])
-X.append(load_folder(os.path.join(DATA_FOLDER, 'D12', 'controls', 'end-motif-frequencies')))
-y += [0.8] * len(X[-1])
+X_D12_controls_adapted = load_folder(os.path.join(RESULTS_FOLDER, 'corrected', 'D12', 'controls', MODALITY))
+
+
+X, d, labels, y = [], [], [], []
+X.append(load_folder(os.path.join(DATA_FOLDER, 'D11', 'cases', MODALITY)))
+y += [1] * len(X[-1])
+d += [0] * len(X[-1])
+labels += ['D11 cases'] * len(X[-1])
+X.append(load_folder(os.path.join(DATA_FOLDER, 'D11', 'controls', MODALITY)))
+y += [0] * len(X[-1])
+d += [0] * len(X[-1])
+labels += ['D11 controls'] * len(X[-1])
+X.append(load_folder(os.path.join(DATA_FOLDER, 'D12', 'controls', MODALITY)))
+y += [0] * len(X[-1])
+d += [1] * len(X[-1])
+labels += ['D12 controls'] * len(X[-1])
 X = np.concatenate(X, axis=0)
-coords = TSNE().fit_transform(X)
+y = np.asarray(y, dtype=int)
+d = np.asarray(d, dtype=object)
+labels = np.asarray(labels, dtype=object)
 
-seaborn.set_theme(style='whitegrid')
-g = seaborn.relplot(
-    x=coords[:, 0],
-    y=coords[:, 1],
-    hue=y,
-    size=np.random.rand(len(coords)),
-    palette=seaborn.cubehelix_palette(rot=-0.2, as_cmap=True),
-)
-g.ax.xaxis.grid(True, "minor", linewidth=.25)
-g.ax.yaxis.grid(True, "minor", linewidth=.25)
-g.despine(left=True, bottom=True)
-plt.show()
+from dagip.core import DomainAdapter
+from dagip.retraction import ProbabilitySimplex
+
+#model = DomainAdapter(manifold=ProbabilitySimplex())
+#X[d == 'D12 controls'] = model.fit_transform(X[d == 'D12 controls'], X[d == 'D11 controls'])
+
+
+
+palette = {'D11 cases': 'palevioletred', 'D11 controls': 'darkslateblue', 'D12 controls': 'teal'}
+ax = plt.subplot(1, 2, 1)
+scatterplot_with_sample_importances(ax, X, y, d, labels, palette)
+ax = plt.subplot(1, 2, 2)
+scaler = RobustScaler()
+scaler.fit(X[labels == 'D11 controls'])
+X[labels == 'D12 controls'] = scaler.inverse_transform(RobustScaler().fit_transform(X[labels == 'D12 controls']))
+#X[labels == 'D12 controls'] = X_D12_controls_adapted
+scatterplot_with_sample_importances(ax, X, y, d, labels, palette)
+#plt.show()
+
+
+fisher_info = loo_influence_analysis(X, y)
+
+print(np.mean(fisher_info[labels == 'D12 controls']))
 
 
 """

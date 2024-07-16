@@ -14,8 +14,8 @@ from sklearn.preprocessing import LabelEncoder
 from dagip.benchmark.baseline import BaselineMethod
 from dagip.benchmark.centering_scaling import CenteringScaling
 from dagip.benchmark.ot_da import OTDomainAdaptation
-from dagip.spatial.euclidean import EuclideanDistance
-from dagip.spatial.euclidean_log import EuclideanDistanceOnLog
+from dagip.benchmark.no_source import NoSourceData
+from dagip.spatial import *
 from dagip.retraction.probability_simplex import ProbabilitySimplex
 from dagip.retraction.ratio import RatioManifold
 from dagip.validation.k_fold import KFoldValidation
@@ -67,25 +67,22 @@ for MODALITY in ['end-motif-frequencies', 'fragment-length-distributions', 'long
 
     if MODALITY in {'fragment-length-distributions', 'end-motif-frequencies'}:
         manifold = ProbabilitySimplex()
-        #pairwise_distances = KLDivergence()
-        #pairwise_distances = EuclideanDistance()  # TODO
-        pairwise_distances = EuclideanDistanceOnLog()
+        pairwise_distances = MinkowskiDistanceOnLog(p=2, eps=1e-9)
     else:
         manifold = RatioManifold()
-        pairwise_distances = EuclideanDistance()
+        pairwise_distances = MinkowskiDistance(p=2)
 
     sample_ids = [str(i) for i in range(len(X))]
 
     validation = KFoldValidation(
         X, y, d, sample_ids,
-        target_domain=0, redo_binning=False, average_results=False, n_splits=5, n_repeats=30
+        target_domain=0, average_results=True, n_splits=5, n_repeats=30
     )
     results = {}
+    #results['no-source'] = validation.validate(NoSourceData())
+    results['ot'] = validation.validate(OTDomainAdaptation(manifold, pairwise_distances, 'tmp', per_label=True))
     results['baseline'] = validation.validate(BaselineMethod())
     results['center-and-scale'] = validation.validate(CenteringScaling())
-    results['ot'] = validation.validate(OTDomainAdaptation(manifold, pairwise_distances, 'tmp', per_label=True))
-
-    print(validation.table)
 
     with open(os.path.join(RESULTS_FOLDER, f'{MODALITY}.json'), 'w') as f:
         json.dump(results, f)

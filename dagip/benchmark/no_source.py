@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  centering_scaling.py
+#  no_source.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -20,16 +20,14 @@
 #  MA 02110-1301, USA.
 
 import numpy as np
-from sklearn.preprocessing import RobustScaler
 
 from dagip.benchmark.base import BaseMethod
 
 
-class CenteringScaling(BaseMethod):
+class NoSourceData(BaseMethod):
 
-    def __init__(self, with_std: bool = True):
+    def __init__(self):
         super().__init__(False, False)
-        self.with_std: bool = bool(with_std)
 
     def adapt(
             self,
@@ -39,29 +37,26 @@ class CenteringScaling(BaseMethod):
             sample_names: np.ndarray,
             target_domain: int = 0
     ):
-
         X_adapted = np.copy(X)
         for label in np.unique(y):
 
-            mask = np.logical_and(d == target_domain, y == label)
-            if not np.any(mask):
+            target_mask = np.logical_and(d == target_domain, y == label)
+            if not np.any(target_mask):
                 continue
-
-            target_scaler = RobustScaler(with_scaling=self.with_std)
-            target_scaler.fit(X[mask, :])
 
             for domain in np.unique(d):
                 if domain != target_domain:
                     mask = np.logical_and(d == domain, y == label)
-                    if not np.any(mask):
-                        continue
 
-                    X_adapted[mask, :] = RobustScaler(with_scaling=self.with_std).fit_transform(X_adapted[mask, :])
-                    X_adapted[mask, :] = target_scaler.inverse_transform(X_adapted[mask, :])
+                    n = int(np.sum(mask))
+                    idx_repl = np.random.randint(0, int(np.sum(target_mask)), size=n)
+
+                    X_adapted[mask, :] = X_adapted[target_mask, :][idx_repl, :]
+
         return X_adapted
 
     def adapt_sample_wise(self, X: np.ndarray) -> np.ndarray:
         raise NotImplementedError()
 
     def name(self) -> str:
-        return 'Centering-scaling'
+        return 'No source data'

@@ -19,8 +19,6 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-from abc import abstractmethod
-
 import torch
 
 from dagip.spatial.base import BaseDistance
@@ -28,7 +26,7 @@ from dagip.spatial.base import BaseDistance
 
 class EuclideanDistanceOnLog(BaseDistance):
 
-    def __init__(self, eps: float = 1e-6):
+    def __init__(self, eps: float = 1e-9):
         self.eps: float = eps
 
     def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:

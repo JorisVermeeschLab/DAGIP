@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  positive.py
+#  minkowski_log.py
 #
-#  Copyright 2023 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,18 +19,18 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-import numpy as np
 import torch
 
-from dagip.nn.gc_correction import diff_gc_correction
-from dagip.retraction.base import Manifold
+from dagip.spatial.base import BaseDistance
 
 
-class Positive(Manifold):
+class MinkowskiDistanceOnLog(BaseDistance):
 
-    def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return torch.exp(X)
+    def __init__(self, p: float = 1.0, eps: float = 1e-9):
+        self.p: float = p
+        self.eps: float = eps
 
-    def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        X = torch.relu(X)
-        return torch.log(X)
+    def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        X = torch.log(torch.clamp(X, self.eps, None))
+        Y = torch.log(torch.clamp(Y, self.eps, None))
+        return torch.cdist(X, Y, p=self.p)

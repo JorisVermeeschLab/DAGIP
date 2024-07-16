@@ -53,9 +53,9 @@ By default, the algorithm does not guarantee that the corrected data lies on the
     from dagip.core import DomainAdapter
     from dagip.retraction import RatioManifold
 
-    model = DomainAdapter(manifold=RatioManifold(eps=1e-3))
+    model = DomainAdapter(manifold=RatioManifold())
 
-where ``eps`` is meant to prevent numerical instability by constraining values to stay in the ``[eps, 1 - eps]`` range instead. ``eps`` can also be specificied for the ``ProbabilitySimplex`` and ``Positive`` manifolds. If your data contains a lot of zeros, please use this feature carefully.
+If your data contains a lot of zeros, please use this feature carefully (due to numerical instability).
 
 Currently, the following manifolds are available:
 
@@ -118,8 +118,7 @@ Hyper-parameter list:
 
 :folder: Folder where to store figures.
 :manifold: ``dagip.retraction.base.Manifold`` instance. Manifold used to add constraints on the data matrix. Please refer to :doc:`this section <advanced-usage>` for implementing custom manifolds.
-:prior_pairwise_distances: ``dagip.spatial.base.BaseDistance`` instance. Used to build the cost matrix which defines the optimal transport problem, and compute the transport plan. Please refer to :doc:`this section <advanced-usage>` for implementing custom distance metrics.
-:pairwise_distances: ``dagip.spatial.base.BaseDistance`` instance. After the transport plan has been computed, used to define the cost matrix and compute the regularized Wasserstein distance in a differentiable manner. While Euclidean distance is relevant is many settings, we recommend using the ``dagip.spatial.euclidean_log.EuclideanDistanceOnLog`` for correcting cfDNA fragment length distributions, for example. Please refer to :doc:`this section <advanced-usage>` for implementing custom distance metrics.
+:pairwise_distances: ``dagip.spatial.base.BaseDistance`` instance. Used to define the cost matrix and solve the optimal transport problem. While Euclidean distance is relevant is many settings, we recommend using the ``dagip.spatial.euclidean_log.EuclideanDistanceOnLog`` for correcting cfDNA fragment length distributions, for example. Please refer to :doc:`this section <advanced-usage>` for implementing custom distance metrics.
 :u_test: Univariate statistical test which will be performed on each variable separately. Should be a function taking two arguments, ``x`` and ``y`` (both 1-dimensional NumPy arrays), and returns a p-value.
 :var_penalty: Penalty of the differences in total variance between :math:`\mathcal{X}` and :math:`Y`.
 :reg_rate: Initial value of the regularization rate. A large value reduces the chances to introduce large changes in the data. If the two cohorts ``X`` and ``Y`` are expected to be perfectly superimposed after correction (for example if ``Y`` contains technical replicates of samples in ``X``), then ``reg_rate`` can be set to a low value instead.

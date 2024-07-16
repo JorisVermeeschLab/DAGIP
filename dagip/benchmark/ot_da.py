@@ -26,7 +26,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from dagip.benchmark.base import BaseMethod
-from dagip.core import ot_da, train_adapter
+from dagip.core import ot_da, train_adapter, DomainAdapter
 from dagip.correction.gc import gc_correction
 from dagip.plot import scatter_plot
 from dagip.retraction import GIPManifold
@@ -60,7 +60,7 @@ class OTDomainAdaptation(BaseMethod):
                 if self.per_label:
 
                     # Define cohorts
-                    X1s, X2s = [], []
+                    X1s, X2s, masks_source = [], [], []
                     for label in np.unique(y):
                         mask_source = np.logical_and(d == domain, y == label)
                         mask_target = np.logical_and(d == target_domain, y == label)
@@ -68,6 +68,7 @@ class OTDomainAdaptation(BaseMethod):
                             continue
                         if np.sum(mask_source) == 0:
                             continue
+                        masks_source.append(mask_source)
                         X1s.append(X_adapted[mask_source])
                         X2s.append(X_adapted[mask_target])
 
@@ -75,13 +76,12 @@ class OTDomainAdaptation(BaseMethod):
                     folder = os.path.join(self.folder, str(uuid.uuid4()))
                     if not os.path.isdir(folder):
                         os.makedirs(folder)
-                    adapter = train_adapter(folder, X1s, X2s, manifold=self.ret, pairwise_distances=self.pairwise_distances)
+                    adapter = DomainAdapter(folder=folder, manifold=self.ret, pairwise_distances=self.pairwise_distances)
+                    X1s_adapted = adapter.fit_transform(X1s, X2s)
 
-                    # Adapt samples
-                    mask_source = (d == domain)
-                    if np.sum(mask_source) == 0:
-                        continue
-                    X_adapted[mask_source, :] = adapter.adapt(X_adapted[mask_source])
+                    # Replace samples
+                    for mask_source, X1_adapted in zip(masks_source, X1s_adapted):
+                        X_adapted[mask_source, :] = X1_adapted
 
                 else:
                     mask_source = (d == domain)
@@ -111,7 +111,7 @@ class OTDomainAdaptation(BaseMethod):
         folder = os.path.join(self.folder, str(uuid.uuid4()))
         if not os.path.isdir(folder):
             os.makedirs(folder)
-        return ot_da(folder, X1, X2, manifold=self.ret, pairwise_distances=self.pairwise_distances)
+        return ot_da(X1, X2, folder=folder, manifold=self.ret, pairwise_distances=self.pairwise_distances)
 
     def adapt_sample_wise(
             self,

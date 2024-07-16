@@ -26,12 +26,9 @@ from dagip.retraction.base import Manifold
 
 class ProbabilitySimplex(Manifold):
 
-    def __init__(self, eps: float = 1e-6):
-        self.eps: float = eps
-
     def _transform(self, X: torch.Tensor) -> torch.Tensor:
         return torch.softmax(X, dim=1)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        X = torch.clamp(X, self.eps, 1)
+        X = torch.clamp(X, 0, 1)
         return torch.log(X)

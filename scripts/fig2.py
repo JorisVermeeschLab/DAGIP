@@ -1,22 +1,30 @@
 import argparse
 import os
+import sys
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(ROOT, '..'))
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from scipy.stats import pearsonr, ks_2samp
+import scipy.spatial
 from sklearn.decomposition import KernelPCA
+from sklearn.manifold import TSNE
 from sklearn.preprocessing import RobustScaler, LabelEncoder
 
 from dagip.core import ot_da, transport_plan
 from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
-from dagip.retraction import GIPManifold
+from dagip.retraction import GIPManifold, Positive
+from dagip.plot import plot_end_motif_freqs, scatterplot_with_sample_importances, loo_influence_analysis
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA_FOLDER = os.path.join(ROOT, 'data')
-OUT_FOLDER = os.path.join(ROOT, 'figures')
+DATA_FOLDER = os.path.join(ROOT, '..', 'data')
+OUT_FOLDER = os.path.join(ROOT, '..', 'figures')
+RESULTS_FOLDER = os.path.join(ROOT, '..', 'results', 'corrected')
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -31,12 +39,9 @@ parser.add_argument(
 args = parser.parse_args()
 DATASET = args.dataset
 
-# Load reference GC content and mappability
-mappability = np.load(os.path.join(DATA_FOLDER, 'mappability.npy'))
-centromeric = np.load(os.path.join(DATA_FOLDER, 'centromeric.npy'))
-chrids = np.load(os.path.join(DATA_FOLDER, 'chrids.npy'))
-df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc.hg38.partition.10000.tsv'), sep='\t')
-gc_content = df['GC.CONTENT'].to_numpy()
+# Load reference GC content
+df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc-content-1000kb.csv'))
+gc_content = df['MEAN'].to_numpy()
 
 # Load data
 if DATASET in {'OV-forward', 'OV-backward'}:
@@ -45,25 +50,20 @@ elif DATASET == 'HEMA':
     filename = 'HEMA.npz'
 else:
     filename = 'NIPT.npz'
-data = np.load(os.path.join(ROOT, DATA_FOLDER, filename), allow_pickle=True)
+data = np.load(os.path.join(ROOT, DATA_FOLDER, 'numpy', filename), allow_pickle=True)
 gc_codes = data['gc_codes']
+gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
 paired_with = data['paired_with']
 X = data['X']
 labels = data['y']
 d = data['d']
 
-print(X.shape, gc_content.shape)
+print('labels: ', set(labels))
 
-# Remove failed samples
-#n_reads = data['num_reads']
-#mask = (n_reads > 3000000)
-#X, gc_codes, labels, d, paired_with = X[mask], gc_codes[mask], labels[mask], d[mask], paired_with[mask]
-
-medians = np.median(X, axis=1)
-mask = (medians > 0)
-X[mask] /= medians[mask, np.newaxis]
-
-gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
+# Remove problematic regions
+mask = np.logical_and(gc_content >= 0, np.all(X >= 0, axis=0))
+X = X[:, mask]
+gc_content = gc_content[mask]
 
 if DATASET == 'HEMA':
     idx1 = np.where(np.logical_and(d == 'D7', labels == 'Healthy'))[0]
@@ -80,51 +80,42 @@ else:
     idx1 = np.asarray(idx1, dtype=int)
     idx2 = np.asarray(idx2, dtype=int)
 
-#if DATASET == 'HEMA':
-#
-#    'OV', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter',
-#        'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000'
-
-X = ChromosomeBounds.bin_from_10kb_to_1mb(X)
-gc_content = ChromosomeBounds.bin_from_10kb_to_1mb(gc_content)
-mappability = ChromosomeBounds.bin_from_10kb_to_1mb(mappability)
-centromeric = ChromosomeBounds.bin_from_10kb_to_1mb(centromeric)
-chrids = ChromosomeBounds.bin_from_10kb_to_1mb(chrids)
-
 print(X.shape, gc_content.shape)
 
 # GC correction
 X_gc_corrected = gc_correction(X, gc_content)
 
 # Center-and-scale
-X_ces = np.copy(X)
-X_ces[idx1, :] = RobustScaler().fit_transform(X[idx1])
+scaler = RobustScaler()
+scaler.fit(X[idx1])
+X_ces = scaler.transform(X)
 X_ces[idx2, :] = RobustScaler().fit_transform(X[idx2])
 
 # Domain adaptation
-if not os.path.exists(f'{DATASET}-corrected.npy'):
+if not os.path.exists(os.path.join(RESULTS_FOLDER, f'{DATASET}-corrected.npy')):
     folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
     X_adapted = np.copy(X_gc_corrected)
-    side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
-    ret = GIPManifold(side_info[:, 0])
-    X_adapted[idx1] = ot_da(folder, X[idx1], X_adapted[idx2], manifold=ret)
-    np.save(f'{DATASET}-corrected.npy', X_adapted)
-X_adapted = np.load(f'{DATASET}-corrected.npy')
+    ret = Positive()  #ret = GIPManifold(gc_content)
+    X_adapted[idx1] = ot_da(X_adapted[idx1], X_adapted[idx2], manifold=ret)
+    np.save(os.path.join(RESULTS_FOLDER, f'{DATASET}-corrected.npy'), X_adapted)
+X_adapted = np.load(os.path.join(RESULTS_FOLDER, f'{DATASET}-corrected.npy'))
 
 #X = RobustScaler().fit_transform(X)
 #X_adapted = RobustScaler().fit_transform(X_adapted)
 #X_ces = RobustScaler().fit_transform(X_ces)
 #X_gc_corrected = RobustScaler().fit_transform(X_gc_corrected)
 
-settings = [(0, 0, X[idx1, :], X[idx2, :], 'No correction')]
-settings.append((0, 1, X_gc_corrected[idx1, :], X_gc_corrected[idx2, :], 'GC correction'))
-settings.append((1, 0, X_ces[idx1, :], X_ces[idx2, :], 'Centering-scaling'))
-settings.append((1, 1, X_adapted[idx1, :], X_adapted[idx2, :], 'Optimal transport'))
+settings = [(0, 0, X, 'No correction')]
+settings.append((0, 1, X_gc_corrected, 'GC correction'))
+settings.append((1, 0, X_ces, 'Centering-scaling'))
+settings.append((1, 1, X_adapted, 'Optimal transport'))
 
 
 colors = ['darkcyan', 'darkcyan', 'darkcyan', 'darkcyan']
 f, ax = plt.subplots(2, 2, figsize=(16, 8))
-for kk, (i, j, X1, X2, title) in enumerate(settings):
+for kk, (i, j, X_corrected, title) in enumerate(settings):
+    X1 = X_corrected[idx1, :]
+    X2 = X_corrected[idx2, :]
     pvalues = np.asarray([ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X.shape[1])])
     ax[i, j].scatter(gc_content, pvalues, alpha=0.1, color=colors[kk])
     ax[i, j].set_yscale('log')
@@ -156,13 +147,9 @@ plt.close()
 
 alpha = 0.5
 size = 5
-f, ax = plt.subplots(2, 6, figsize=(16, 8), gridspec_kw=dict(width_ratios=[6,6,2,6,2,6], hspace=0.3))
+f, ax = plt.subplots(2, 2, figsize=(16, 8))
 
 numb_fontsize = 14
-ax[0, 0].text(0.07, 0.90, '(A)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
-ax[0, 0].text(0.45, 0.90, '(B)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
-ax[0, 0].text(0.70, 0.90, '(C)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
-ax[0, 0].text(0.70, 0.45, '(D)', weight='bold', fontsize=numb_fontsize, transform=plt.gcf().transFigure)
 
 if DATASET == 'HEMA':
     d1, d2 = '7', '8'
@@ -182,36 +169,38 @@ elif DATASET == 'NIPT-hs4000':
     d1, d2 = '5,a', '5,b'
 else:
     raise NotImplementedError(f'Unknown dataset "{DATASET}"')
-for i, j, X1, X2, title in settings:
-    print(len(X1), len(X2))
-    pca = KernelPCA(n_components=2)
-    pca.fit(np.concatenate((X1, X2), axis=0))
-    coords = pca.transform(X1)
-    ax[i, j].scatter(
-        coords[:, 0], coords[:, 1], color='darkgoldenrod', alpha=alpha, s=size,
-        # label=r'Healthy ($\mathcal{D}_{' + d1 + r'}$)'
-    )
+for i, j, X_corrected, title in settings:
+    X1 = X_corrected[idx1, :]
+    X2 = X_corrected[idx2, :]
+
+    #transformer = KernelPCA(n_components=2)
+    transformer = TSNE(early_exaggeration=80, perplexity=7)
+    coords = transformer.fit_transform(X_corrected)
+
+    palette = {}
+    combined_labels = np.asarray([label + str(domain) for label, domain in zip(labels, d)], dtype=object)
+    scatterplot_with_sample_importances(ax[i, j], X_corrected, labels != 'Healthy', d, combined_labels, palette)
     ax[i, j].set_xlabel('First principal component')
     if j == 0:
         ax[i, j].set_ylabel('Second principal component')
     ax[i, j].set_title(title)
     ax[i, j].spines['right'].set_visible(False)
     ax[i, j].spines['top'].set_visible(False)
-    coords = pca.transform(X2)
-    ax[i, j].scatter(
-        coords[:, 0], coords[:, 1], color='darkcyan', alpha=alpha, s=size,
-        # label=r'Healthy ($\mathcal{D}_{' + d2 + r'}$)'
-    )
     if (i, j) == (0, 0):
         ax[i, j].legend(prop={'size': 8})
 
-ax[0, 2].remove()
-ax[1, 2].remove()
+plt.show()
+import sys; sys.exit(0)
+
+
 
 import scipy.stats
 res = []
 titles = []
-for i, j, X1, X2, title in settings[::-1]:
+for i, j, X_corrected, title in settings[::-1]:
+    X1 = X_corrected[idx1, :]
+    X2 = X_corrected[idx2, :]
+
     pvalues = np.asarray([scipy.stats.ks_2samp(X1[:, k], X2[:, k]).pvalue for k in range(X.shape[1])])
     print(title, pvalues)
 
@@ -256,7 +245,6 @@ Z1_corrected = RobustScaler().fit_transform(X_gc_corrected[idx1, :])
 Z1_adapted = RobustScaler().fit_transform(X_adapted[idx1, :])
 
 zscore_lim = 3
-_, _, X1, _, _ = settings[0]
 ax[0, 5].plot([-zscore_lim, zscore_lim], [-zscore_lim, zscore_lim], color='black', linestyle='--', linewidth=0.5)
 ax[0, 5].scatter(Z1_corrected.flatten()[::20], Z1_adapted.flatten()[::20], s=4, alpha=0.03, color='black')
 ax[0, 5].set_xlim(-zscore_lim, zscore_lim)
@@ -272,7 +260,8 @@ print('pearson GC correction', r)
 # Compute optimal transport plan (after inference)
 scaler = RobustScaler()
 scaler.fit(X_adapted[idx2])
-gamma = transport_plan(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
+distances = scipy.spatial.distance.cdist(scaler.transform(X_adapted[idx1]), scaler.transform(X_adapted[idx2]))
+gamma = transport_plan(distances)
 unique, counts = np.unique(np.sum(gamma > 1e-5, axis=0), return_counts=True)
 ax[1, 5].bar(
     unique - 0.15, counts, color='darkgoldenrod', width=0.3,

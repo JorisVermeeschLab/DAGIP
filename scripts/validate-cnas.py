@@ -15,8 +15,9 @@ from dagip.benchmark.baseline import BaselineMethod
 from dagip.benchmark.gc_correction import GCCorrection
 from dagip.benchmark.centering_scaling import CenteringScaling
 from dagip.benchmark.ot_da import OTDomainAdaptation
+from dagip.benchmark.no_source import NoSourceData
 from dagip.nipt.binning import ChromosomeBounds
-from dagip.spatial.euclidean import EuclideanDistance
+from dagip.spatial import *
 from dagip.retraction.positive import Positive
 from dagip.retraction.gip import GIPManifold
 from dagip.validation.k_fold import KFoldValidation
@@ -78,27 +79,31 @@ mask = np.logical_and(gc_content >= 0, np.all(X >= 0, axis=0))
 X = X[:, mask]
 gc_content = gc_content[mask]
 
+print('Start validation')
+
+manifold = Positive()
+#manifold = GIPManifold(gc_content)
+
 # Cross-validation
 validation = KFoldValidation(
     X, y, d, gc_codes,
-    target_domain=0, redo_binning=False, average_results=True, n_splits=5, n_repeats=30,
+    target_domain=0, average_results=True, n_splits=5, n_repeats=30,
     groups=groups,
     gc_content=gc_content
 )
 ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
 folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
 results = {}
+#results['no-source'] = validation.validate(NoSourceData())
 results['baseline'] = validation.validate(BaselineMethod())
 results['center-and-scale'] = validation.validate(CenteringScaling())
 results['gc-correction'] = validation.validate(GCCorrection())
 results['ot-without-gc-correction'] = validation.validate(
-    OTDomainAdaptation(Positive(), EuclideanDistance(), 'tmp', per_label=True, gc_correction=False)
+    OTDomainAdaptation(Positive(), MinkowskiDistance(p=2), 'tmp', per_label=True, gc_correction=False)
 )
 results['ot'] = validation.validate(
-    OTDomainAdaptation(GIPManifold(gc_content), EuclideanDistance(), 'tmp', per_label=True, gc_correction=True)
+    OTDomainAdaptation(manifold, MinkowskiDistance(p=2), 'tmp', per_label=True, gc_correction=True)
 )
-
-print(validation.table)
 
 with open(os.path.join(RESULTS_FOLDER, f'{DATASET}.json'), 'w') as f:
     json.dump(results, f)

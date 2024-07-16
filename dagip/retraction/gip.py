@@ -37,5 +37,5 @@ class GIPManifold(Manifold):
         return diff_gc_correction(X, self.gc_content, frac=self.frac)
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
-        X = torch.clamp(X, 1e-5, None)
+        X = torch.relu(X)
         return torch.log(X)

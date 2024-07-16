@@ -57,9 +57,8 @@ class MLPAdapter(torch.nn.Module):
 
     def forward(self, X_original: torch.Tensor) -> torch.Tensor:
         X = self.manifold.inverse_transform(X_original)
-        bias = self.bias_estimator(X)
-        X_prime = self.manifold.transform(X + self.eta * bias)
-        return X_prime
+        bias = self.bias_estimator(X_original)
+        return self.manifold.transform(X + self.eta * bias)
 
     @torch.no_grad()
     def adapt(self, X: np.ndarray) -> np.ndarray:

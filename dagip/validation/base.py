@@ -42,8 +42,8 @@ class CrossValidation(metaclass=ABCMeta):
 
     PIPELINES = collections.OrderedDict({
         'svm': SVC(C=1, class_weight='balanced', probability=True),  # 1
-        'rf': RandomForestClassifier(max_depth=5, class_weight='balanced'),  # 5
-        # 'knn': KNeighborsClassifier(weights='distance'),
+        'rf': RandomForestClassifier(class_weight='balanced'),  # max_depth=5
+        'knn': KNeighborsClassifier(weights='distance'),
         'reglog': LogisticRegression(C=1, class_weight='balanced', max_iter=10000)
     })
 
@@ -54,7 +54,6 @@ class CrossValidation(metaclass=ABCMeta):
             d: np.ndarray,
             sample_names: np.ndarray,
             target_domain: int = 0,
-            redo_binning: bool = True,
             gc_content: Optional[np.ndarray] = None
     ):
         self.X: np.ndarray = X
@@ -67,7 +66,6 @@ class CrossValidation(metaclass=ABCMeta):
         self.d: np.ndarray = d
         self.sample_names: np.ndarray = np.asarray(sample_names, dtype=object)
         self.target_domain: int = int(target_domain)
-        self.redo_binning: bool = bool(redo_binning)
 
         # Results
         self.table: LaTeXTable = LaTeXTable()
@@ -128,8 +126,20 @@ class CrossValidation(metaclass=ABCMeta):
         X_test = X_test[six_test, :]
         y_test = y_test[six_test]
 
+        # Determine which training samples (target domain) should be discarded after correction
+        to_be_removed = np.zeros(len(X_train), dtype=bool)
+        for domain in np.unique(d_train):
+            if domain != self.target_domain:
+                for label in np.unique(y_train):
+                    mask_source = np.logical_and(d_train == domain, y_train == label)
+                    mask_target = np.logical_and(d_train == self.target_domain, y_train == label)
+                    if np.any(mask_source) and np.any(mask_target):
+                        to_be_removed[mask_target] = True
+        X_train = X_train[~to_be_removed, :]
+        y_train = y_train[~to_be_removed]
+
         # Standard scaling
-        scaler = RobustScaler()
+        scaler = RobustScaler(with_scaling=False)
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
@@ -152,11 +162,13 @@ class CrossValidation(metaclass=ABCMeta):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
 
+            # Default cutoff on predictions (0.5)
             tn, fp, fn, tp = confusion_matrix(y_target, y_pred > 0.5).ravel()
             sensitivity = np.nan_to_num(tp / (tp + fn))
             specificity = np.nan_to_num(tn / (tn + fp))
             mcc = matthews_corrcoef(y_target, y_pred > 0.5)
 
+            # Optimal cutoff on predictions
             threshold = CrossValidation.best_threshold(y_target, y_pred)
             tn, fp, fn, tp = confusion_matrix(y_target, y_pred > threshold).ravel()
             sensitivity_best = np.nan_to_num(tp / (tp + fn))
