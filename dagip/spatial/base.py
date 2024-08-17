@@ -33,10 +33,37 @@ class BaseDistance(metaclass=ABCMeta):
             X = torch.FloatTensor(X)
         if not torch.is_tensor(Y):
             Y = torch.FloatTensor(Y)
-        D = self.pairwise_distances(X, Y)
+        D = self.pairwise_distances_(X, Y)
         assert D.size() == (len(X), len(Y))
         return D
 
+    def cdist(self, X: Union[np.ndarray, torch.Tensor], Y: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        if not torch.is_tensor(X):
+            X = torch.FloatTensor(X)
+        if not torch.is_tensor(Y):
+            Y = torch.FloatTensor(Y)
+        D = self.pairwise_distances_(X, Y)
+        assert D.size() == (len(X), len(Y))
+        return D
+
+    def barycentric_mapping(self, gamma: Union[np.ndarray, torch.Tensor], Y: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        if not torch.is_tensor(gamma):
+            gamma = torch.FloatTensor(gamma)
+        if not torch.is_tensor(Y):
+            Y = torch.FloatTensor(Y)
+        X = self.barycentric_mapping_(gamma, Y)
+        assert gamma.size(0) == X.size(0)
+        assert gamma.size(1) == Y.size(0)
+        return X
+
     @abstractmethod
-    def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    def distances_(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @abstractmethod
+    def pairwise_distances_(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @abstractmethod
+    def barycentric_mapping_(self, gamma: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
         pass

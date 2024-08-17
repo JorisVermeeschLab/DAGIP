@@ -24,6 +24,7 @@ from typing import Tuple, Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.metrics import r2_score
 
 from dagip.segmentation import SovRefine
 

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  ot_da.py
+#  mapping_transport.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,46 +19,59 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-import os
-import uuid
 from typing import Tuple, List
 
 import numpy as np
-from matplotlib import pyplot as plt
+import ot.da
 
 from dagip.benchmark.base import BaseMethod
-from dagip.core import ot_da, train_adapter, DomainAdapter
-from dagip.correction.gc import gc_correction
-from dagip.plot import scatter_plot
-from dagip.retraction import GIPManifold
-from dagip.retraction.base import Manifold
-from dagip.spatial.base import BaseDistance
-from dagip.utils import log_
 
 
-class OTDomainAdaptation(BaseMethod):
+class MappingTransport(BaseMethod):
 
-    def __init__(self, ret: Manifold, distance: BaseDistance, folder: str, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.ret: Manifold = ret
-        self.distance: BaseDistance = distance
-        self.folder: str = folder
 
     def normalize_(self, X: np.ndarray, reference: np.ndarray) -> np.ndarray:
         return X
 
     def adapt_per_label_(self, Xs: List[np.ndarray], Xt: List[np.ndarray]) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        folder = os.path.join(self.folder, str(uuid.uuid4()))
-        adapter = DomainAdapter(folder=folder, manifold=self.ret, distance=self.distance)
-        res = adapter.fit_transform(Xs, Xt)
-        return [(x, np.ones(len(x)), np.ones(len(y))) for x, y in zip(res, Xt)]
+        sizes, ys = [], []
+        for i, X1 in enumerate(Xs):
+            sizes.append(len(X1))
+            ys.append(np.full(len(X1), i, dtype=int))
+
+        model = ot.da.MappingTransport()
+
+        print(np.concatenate(ys, axis=0).dtype, set(np.concatenate(ys, axis=0)))
+
+        model.fit(
+            Xs=np.concatenate(Xs, axis=0),
+            ys=np.concatenate(ys, axis=0),
+            Xt=np.concatenate(Xt, axis=0)
+        )
+        X_adapted = model.transform(Xs)
+
+        sizes = np.cumsum([0] + sizes)
+        starts = sizes[:-1]
+        ends = sizes[1:]
+
+        output = []
+        for start, end, y in zip(sizes[:-1], sizes[1:], Xt):
+            weights_source = np.ones(end - start)
+            weights_target = np.ones(len(y))
+            output.append((X_adapted[start:end, :], weights_source, weights_target))
+
+        return output
 
     def adapt_(self, Xs: np.ndarray, Xt: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        folder = os.path.join(self.folder, str(uuid.uuid4()))
-        X_adapted = ot_da(Xs, Xt, folder=folder, manifold=self.ret, distance=self.distance)
+        ys = np.zeros(len(Xs), dtype=int)
+        model = ot.da.MappingTransport()
+        model.fit(Xs=Xs, ys=ys, Xt=Xt)
+        X_adapted = model.transform(Xs)
         weights_source = np.ones(len(Xs))
         weights_target = np.ones(len(Xt))
         return X_adapted, weights_source, weights_target
 
     def name(self) -> str:
-        return 'DA'
+        return 'MappingTransport'

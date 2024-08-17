@@ -5,29 +5,51 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(ROOT, '..'))
 sys.path.append('/lustre1/project/stg_00019/research/Antoine/dependencies')
 
+import tqdm
 import numpy as np
+import scipy.stats
 import pandas as pd
 from matplotlib import pyplot as plt
 from sklearn.preprocessing import RobustScaler
+from sklearn.metrics import r2_score
+import seaborn
+from pycirclize import Circos
+from pycirclize.utils import load_eukaryote_example_dataset
 
-from dagip.core import ot_da
+import ot.da
+from dagip.core import ot_da, DomainAdapter
 from dagip.correction.gc import gc_correction
-from dagip.ichorcna.metrics import ploidy_accuracy, cna_accuracy, sov_refine, absolute_error
+from dagip.ichorcna.metrics import ploidy_accuracy, cna_accuracy, sign_accuracy, sov_refine, absolute_error
 from dagip.nipt.binning import ChromosomeBounds
-from dagip.retraction import GIPManifold
+from dagip.retraction import Positive
+from dagip.tools.dryclean import run_dryclean
 from dagip.tools.ichor_cna import ichor_cna, create_ichor_cna_normal_panel, load_ichor_cna_results
 
 
 DATA_FOLDER = os.path.join(ROOT, '..', 'data')
+ICHORCNA_LOCATION = os.path.join(ROOT, '..', 'ichorCNA-master')
+RESULTS_FOLDER = os.path.join(ROOT, '..', 'results', 'corrected')
+FIGURES_FOLDER = os.path.join(ROOT, '..', 'figures')
 
-CORRECTION = False
-REFERENCE_FREE = True
-BACKWARD = False
+REFERENCE_FREE = False
+METHOD = 'dagip'
+
+
+PRETTY_NAMES = {
+    'baseline': 'Baseline',
+    'centering-scaling': 'Center-and-scale',
+    'mapping-transport': 'MappingTransport',
+    'dryclean': 'dryclean',
+    'dagip': 'DAGIP'
+}
 
 
 # Load reference GC content and mappability
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc-content-1000kb.csv'))
 gc_content = df['MEAN'].to_numpy()
+bin_chr_names = df['CHR'].to_numpy()
+bin_starts = df['START'].to_numpy()
+bin_ends = df['END'].to_numpy()
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'mappability-1000kb.csv'))
 mappability = df['MEAN'].to_numpy()
 
@@ -37,238 +59,347 @@ gc_codes = data['gc_codes']
 X = data['X']
 y = (data['y'] == 'OV').astype(int)
 d = (data['d'] == 'D9').astype(int)
+paired_with = data['paired_with']
+assert not np.any(np.isnan(X))
 
-# Create normal panel using samples from domain 1
-ichor_cna_location = os.path.join(ROOT, '..', 'ichorCNA-master')
-folder = os.path.join(ROOT, '..', 'ichor-cna-results', f'domain-1',
-                      'ov-backward' if BACKWARD else 'ov-forward', 'normal-panel')
-normal_panel_filepath = os.path.join(folder, 'normal-panel_median.rds')
-if not os.path.exists(normal_panel_filepath):
-    idx = np.where(np.logical_and(y == 0, d == 1))[0]
-    create_ichor_cna_normal_panel(ichor_cna_location, folder, X[idx, :], gc_content, mappability)
+# Load sample pairs
+gc_code_dict = {gc_code: i for i, gc_code in enumerate(gc_codes)}
+idx1_pairs, idx2_pairs = [], []
+for i in range(len(X)):
+    if d[i] == 0:
+        continue
+    if paired_with[i]:
+        j = gc_code_dict[paired_with[i]]
+        if y[i] == 1:
+            idx1_pairs.append(i)
+            idx2_pairs.append(j)
+idx1_pairs = np.asarray(idx1_pairs, dtype=int)
+idx2_pairs = np.asarray(idx2_pairs, dtype=int)
+idx_pairs = set(list(np.concatenate((idx1_pairs, idx2_pairs), axis=0)))
+print(f'Number of pairs: {len(idx1_pairs)}')
 
-# Call CNAs in cancer samples from domain 1
-log_r, fractions, cna, ploidy, prevalence, subclonal = [], [], [], [], [], []
-for i in np.where(np.logical_and(y == 1, d == 1))[0]:
-    folder = os.path.join(
-        'ichor-cna-results',
-        'domain-1' if (not REFERENCE_FREE) else 'domain-1-noref',
-        'ov-backward' if BACKWARD else 'ov-forward',
-        gc_codes[i]
-    )
-    results = load_ichor_cna_results(folder)
-    if not results['success']:
-        ichor_cna(
-            ichor_cna_location,
-            None if REFERENCE_FREE else normal_panel_filepath,
-            folder,
-            X[i, :],
-            gc_content,
-            mappability
-        )
-        results = load_ichor_cna_results(folder)
-    log_r.append(results['log-r'])
-    cna.append(results['copy-number'])
-    fractions.append(results['tumor-fraction'])
-    ploidy.append(results['tumor-ploidy'])
-    prevalence.append(results['tumor-cellular-prevalence'])
-    subclonal.append(results['proportion-subclonal-cnas'])
-cna = np.asarray(cna)
-fractions = np.asarray(fractions)
-ploidy = np.asarray(ploidy)
-prevalence = np.asarray(prevalence)
-subclonal = np.asarray(subclonal)
-log_r = np.asarray(log_r)
+idx_y0d0 = np.asarray(list(set(np.where(np.logical_and(y == 0, d == 0))[0]).difference(idx_pairs)), dtype=int)
+idx_y0d1 = np.asarray(list(set(np.where(np.logical_and(y == 0, d == 1))[0]).difference(idx_pairs)), dtype=int)
+idx_y1d0 = np.asarray(list(set(np.where(np.logical_and(y == 1, d == 0))[0]).difference(idx_pairs)), dtype=int)
+idx_y1d1 = np.asarray(list(set(np.where(np.logical_and(y == 1, d == 1))[0]).difference(idx_pairs)), dtype=int)
+idx_d0 = np.asarray(list(set(np.where(d == 0)[0]).difference(idx_pairs)), dtype=int)
+idx_d1 = np.asarray(list(set(np.where(d == 1)[0]).difference(idx_pairs)), dtype=int)
+
+print(len(idx_y0d0), len(idx_y0d1), len(idx_y1d0), len(idx_y1d1))
+import sys; sys.exit(0)
+
+# GC-correction
+X = np.clip(X, 0, None)
+X = gc_correction(X, gc_content)
 
 # Domain adaptation
-log_r_adapted = {}
-cna_adapted = {}
-fractions_adapted = {}
-ploidy_adapted = {}
-prevalence_adapted = {}
-subclonal_adapted = {}
-for METHOD in ['rf-da']:
-    idx1 = np.where(np.logical_and(y == 1, d == 1))[0]
-    idx2 = np.where(np.logical_and(y == 1, d == 0))[0]
-    if CORRECTION:
-        if METHOD == 'rf-da':
-            ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
-            folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', 'icna')
-            X_adapted = gc_correction(X, gc_content)
-            side_info = np.asarray([gc_content, mappability, centromeric, chrids]).T
-            ret = GIPManifold(side_info[:, 0])
-            X_adapted[idx1] = ot_da(
-                folder, X[idx1], X_adapted[idx2], manifold=ret
-            )
-        elif METHOD == 'gc-correction':
-            X_adapted = gc_correction(X, gc_content)
-        elif METHOD == 'centering-scaling':
-            X_adapted = np.copy(X)
-            scaler2 = RobustScaler()
-            scaler2.fit(X[idx2])
-            X_adapted[idx1, :] = np.maximum(0, scaler2.inverse_transform(RobustScaler().fit_transform(X[idx1])))
-        elif METHOD == 'none':
-            X_adapted = X
-        else:
-            raise NotImplementedError(f'Unknown correction method "{METHOD}"')
+X_adapted = np.copy(X)
+if METHOD == 'dagip':
+    if not os.path.exists(os.path.join(RESULTS_FOLDER, 'dagip', f'OVi-corrected.npy')):
+        folder = os.path.join(ROOT, 'tmp', 'ot-da-tmp')
+        adapter = DomainAdapter(folder=folder, manifold=Positive())
+        adapter.fit(
+            [X_adapted[idx_y0d1, :], X_adapted[idx_y1d1, :]],
+            [X_adapted[idx_y0d0, :], X_adapted[idx_y1d0, :]]
+        )
+        X_adapted[d == 1, :] = adapter.transform(X_adapted[d == 1, :])
+        np.save(os.path.join(RESULTS_FOLDER, 'dagip', f'OVi-corrected.npy'), X_adapted)
     else:
-        X_adapted = X
+        X_adapted = np.load(os.path.join(RESULTS_FOLDER, 'dagip', f'OVi-corrected.npy'))
+elif METHOD == 'centering-scaling':
 
-    # Create normal panel using samples from domain i
-    ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
-    folder = os.path.join(
-        ROOT,
-        'ichor-cna-results',
-        METHOD if (not REFERENCE_FREE) else f'{METHOD}-noref',
-        'ov-backward' if BACKWARD else 'ov-forward',
-        'normal-panel'
+    # Correct controls
+    target_scaler = RobustScaler()
+    target_scaler.fit(X_adapted[idx_y0d0, :])
+    source_scaler = RobustScaler()
+    source_scaler.fit(X_adapted[idx_y0d1, :])
+    X_adapted[np.logical_and(y == 0, d == 1), :] = target_scaler.inverse_transform(source_scaler.transform(X_adapted[np.logical_and(y == 0, d == 1), :]))
+
+    # Correct casses
+    target_scaler = RobustScaler()
+    target_scaler.fit(X_adapted[idx_y1d0, :])
+    source_scaler = RobustScaler()
+    source_scaler.fit(X_adapted[idx_y1d1, :])
+    X_adapted[np.logical_and(y == 1, d == 1), :] = target_scaler.inverse_transform(source_scaler.transform(X_adapted[np.logical_and(y == 1, d == 1), :]))
+
+elif METHOD == 'baseline':
+    pass  # No correction
+elif METHOD == 'dryclean':
+    if not os.path.exists(os.path.join(RESULTS_FOLDER, 'dryclean', f'OVi-corrected.npy')):
+        X_adapted[d == 0, :] = run_dryclean(bin_chr_names, bin_starts, bin_ends,
+            X_adapted[np.logical_and(d == 0, y == 0), :], X_adapted[d == 0, :], 'tmp-dryclean')
+        X_adapted[d == 1, :] = run_dryclean(bin_chr_names, bin_starts, bin_ends,
+            X_adapted[np.logical_and(d == 1, y == 0), :], X[d == 1, :], 'tmp-dryclean')
+        np.save(os.path.join(RESULTS_FOLDER, 'dryclean', f'OVi-corrected.npy'), X_adapted)
+    else:
+        X_adapted = np.load(os.path.join(RESULTS_FOLDER, 'dryclean', f'OVi-corrected.npy'))
+    X = X_adapted
+elif METHOD == 'mapping-transport':
+    model = ot.da.MappingTransport()
+    model.fit(
+        Xs=X_adapted[idx_d1, :],
+        ys=y[idx_d1],
+        Xt=X_adapted[idx_d0, :]
     )
-    normal_panel_filepath = os.path.join(folder, 'normal-panel_median.rds')
-    if not os.path.exists(normal_panel_filepath):
-        idx = np.where(np.logical_and(y == 0, d == 0))[0]
+    X_adapted[d == 1, :] = model.transform(Xs=X_adapted[d == 1, :])
+else:
+    raise NotImplementedError(f'Unknown correction method "{METHOD}"')
+
+# Define how to create panel of normals
+def create_pon(pon_folder: str, X_sub: np.ndarray) -> None:
+    if not os.path.exists(os.path.join(ROOT, 'ichor-cna-results', 'normal-panels', pon_folder, 'normal-panel_median.rds')):
         create_ichor_cna_normal_panel(
-            ichor_cna_location,
-            folder,
-            X_adapted[idx, :],
-            gc_content,
-            mappability
+            ICHORCNA_LOCATION,
+            os.path.join(ROOT, 'ichor-cna-results', 'normal-panels', pon_folder),
+            X_sub, gc_content, mappability
         )
 
-    # Call CNAs in cancer samples from domain i
-    log_r_adapted[METHOD] = []
-    cna_adapted[METHOD] = []
-    fractions_adapted[METHOD] = []
-    ploidy_adapted[METHOD] = []
-    prevalence_adapted[METHOD] = []
-    subclonal_adapted[METHOD] = []
-    for i in np.where(np.logical_and(y == 1, d == 1))[0]:
-        folder = os.path.join(
-            'ichor-cna-results',
-            METHOD if (not REFERENCE_FREE) else f'{METHOD}-noref',
-            'ov-backward' if BACKWARD else 'ov-forward',
-            gc_codes[i]
-        )
+# Create panels of normals
+if not REFERENCE_FREE:
+    create_pon('d1', X[np.logical_and(d == 1, y == 0), :])
+    create_pon('d0', X[np.logical_and(d == 0, y == 0), :])
+    create_pon(os.path.join('d1-adapted', METHOD), X_adapted[np.logical_and(d == 1, y == 0), :])
+
+
+# Define how to call CNAs in cancer samples
+def cna_calling(pon_folder: str, res_folder: str, X_sub: np.ndarray, gc_codes_: np.ndarray, reference_free: bool = False) -> None:
+    all_results = []
+    for i in range(len(gc_codes_)):
+        if reference_free:
+            folder = os.path.join('ichor-cna-results', 'noref', res_folder, gc_codes_[i])
+        else:
+            folder = os.path.join('ichor-cna-results', res_folder, gc_codes_[i])
+        os.makedirs(folder, exist_ok=True)
         results = load_ichor_cna_results(folder)
+        normal_panel_filepath = os.path.join(ROOT, 'ichor-cna-results', 'normal-panels', pon_folder, 'normal-panel_median.rds')
         if not results['success']:
             ichor_cna(
-                ichor_cna_location,
+                ICHORCNA_LOCATION,
                 None if REFERENCE_FREE else normal_panel_filepath,
                 folder,
-                X_adapted[i, :],
+                X_sub[i, :],
                 gc_content,
                 mappability
             )
             results = load_ichor_cna_results(folder)
+        all_results.append(results)
+    return all_results
 
-        log_r_adapted[METHOD].append(results['log-r'])
-        cna_adapted[METHOD].append(results['copy-number'])
 
-        fractions_adapted[METHOD].append(results['tumor-fraction'])
-        ploidy_adapted[METHOD].append(results['tumor-ploidy'])
-        prevalence_adapted[METHOD].append(results['tumor-cellular-prevalence'])
-        subclonal_adapted[METHOD].append(results['proportion-subclonal-cnas'])
+results_1_1 = cna_calling('d1', 'd1', X[idx1_pairs, :], gc_codes[idx1_pairs], reference_free=REFERENCE_FREE)
+results_1a_1a = cna_calling(os.path.join('d1-adapted', METHOD), os.path.join('d1-adapted', 'd1-controls', METHOD), X_adapted[idx1_pairs, :], gc_codes[idx1_pairs], reference_free=REFERENCE_FREE)
+results_0_0 = cna_calling('d0', 'd0', X[idx2_pairs, :], gc_codes[idx2_pairs], reference_free=REFERENCE_FREE)
+results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', METHOD), X_adapted[idx1_pairs, :], gc_codes[idx1_pairs], reference_free=REFERENCE_FREE)
 
-    cna_adapted[METHOD] = np.asarray(cna_adapted[METHOD])
-    fractions_adapted[METHOD] = np.asarray(fractions_adapted[METHOD])
-    prevalence_adapted[METHOD] = np.asarray(prevalence_adapted[METHOD])
-    subclonal_adapted[METHOD] = np.asarray(subclonal_adapted[METHOD])
-    log_r_adapted[METHOD] = np.asarray(log_r_adapted[METHOD])
 
-    f = lambda x: f'{(int(round(1000 * x)) * 0.1):.1f}'
+def compute_metrics(res1, res2):
 
-    print('TODO', np.mean([isinstance(x, np.ndarray) for x in cna]))
+    cna1 = [x['copy-number'] for x in res1]
+    cna2 = [x['copy-number'] for x in res2]
+    log_r1 = np.asarray([x['log-r'] for x in res1], dtype=float)
+    log_r2 = np.asarray([x['log-r'] for x in res2], dtype=float)
+    fractions1 = np.asarray([x['tumor-fraction'] for x in res1], dtype=float)
+    fractions2 = np.asarray([x['tumor-fraction'] for x in res2], dtype=float)
+    ploidy1 = np.asarray([x['tumor-ploidy'] for x in res1], dtype=float)
+    ploidy2 = np.asarray([x['tumor-ploidy'] for x in res2], dtype=float)
 
-    print(METHOD)
-    print('Accuracy (ploidy)', f(np.mean(ploidy_accuracy(cna, cna_adapted[METHOD]))))
-    print('Accuracy (CNA)', f(np.mean(cna_accuracy(cna, cna_adapted[METHOD]))))
-    print('SOV_REFINE', np.mean(sov_refine(cna, cna_adapted[METHOD])))
-    print('Error on log ratios', np.mean(absolute_error(log_r, log_r_adapted[METHOD])))
-    print('Error on tumour fraction', np.mean(absolute_error(fractions, fractions_adapted[METHOD])))
-    print('Error on tumour ploidy', np.mean(absolute_error(ploidy, ploidy_adapted[METHOD])))
-    print('Error on cellular prevalence', np.mean(absolute_error(prevalence, prevalence_adapted[METHOD])))
-    print('Error on proportion of subclonal CNAs', np.mean(absolute_error(subclonal, subclonal_adapted[METHOD])))
+    prevalence1 = np.asarray([x['tumor-cellular-prevalence'] for x in res1], dtype=float)
+    prevalence2 = np.asarray([x['tumor-cellular-prevalence'] for x in res2], dtype=float)
+    mask = ~np.logical_or(np.isnan(prevalence1), np.isnan(prevalence2))
+    prevalence1, prevalence2 = prevalence1[mask], prevalence2[mask]
+
+    subclonal1 = np.asarray([x['proportion-subclonal-cnas'] for x in res1], dtype=float)
+    subclonal2 = np.asarray([x['proportion-subclonal-cnas'] for x in res2], dtype=float)
+    mask = ~np.logical_or(np.isnan(subclonal1), np.isnan(subclonal2))
+    subclonal1, subclonal2 = subclonal1[mask], subclonal2[mask]
+
+    metrics = {
+        'Accuracy (ploidy)': np.mean(ploidy_accuracy(cna1, cna2)),
+        'Accuracy (poildy sign)': np.mean(sign_accuracy(cna1, cna2)),
+        'SOV_REFINE': np.mean(sov_refine(cna1, cna2)),
+        'r2 (Log ratios)': r2_score(log_r1.flatten(), log_r2.flatten()),
+        'r2 (tumor fractions)': r2_score(fractions1.flatten(), fractions2.flatten()),
+        'r2 (tumor ploidy)': r2_score(ploidy1.flatten(), ploidy2.flatten()),
+        'r2 (cellular prevalence)': r2_score(prevalence1.flatten(), prevalence2.flatten()),
+        'r2 (proportion of subclonal CNAs)': r2_score(subclonal1.flatten(), subclonal2.flatten())
+    }
+    metrics['Average'] = np.mean(list(metrics.values()))
+
+    print(metrics)
     print('')
 
+    return metrics
 
-np.savez('fractions-noref.npz', before=fractions, after=fractions_adapted['rf-da'])
-plt.scatter(fractions, fractions_adapted['rf-da'])
+
+metrics_1_1 = compute_metrics(results_1_1, results_1a_1a)
+metrics_0_0 = compute_metrics(results_0_0, results_0_1a)
+print(f'Score 1: {np.mean(list(metrics_1_1.values()))}')
+print(f'Score 2: {np.mean(list(metrics_0_0.values()))}')
+print(f'Overall score: {0.5 * np.mean(list(metrics_1_1.values())) + 0.5 * np.mean(list(metrics_0_0.values()))}')
+
+
+plt.figure(figsize=(4, 4))
+ax = plt.subplot(1, 1, 1)
+for reference_free in [True, False]:
+    results_1_1 = cna_calling('d1', 'd1', None, gc_codes[idx1_pairs], reference_free=reference_free)
+    results_1a_1a = cna_calling(os.path.join('d1-adapted', METHOD), os.path.join('d1-adapted', 'd1-controls', METHOD), None, gc_codes[idx1_pairs], reference_free=reference_free)
+    results_0_0 = cna_calling('d0', 'd0', None, gc_codes[idx2_pairs], reference_free=reference_free)
+    results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', METHOD), None, gc_codes[idx1_pairs], reference_free=reference_free)
+
+    kwargs = dict(marker='v', s=40, alpha=0.6)
+    kwargs['color'] = ('goldenrod' if reference_free else 'teal')
+    kwargs['label'] = ('Reference-free' if reference_free else 'Reference-based')
+    xs = [res['tumor-fraction'] for res in results_0_0]
+    ys = [np.nanmean(res1['copy-number'] == res2['copy-number']) for res1, res2 in zip(results_0_0, results_0_1a)]
+    ax.scatter(xs, ys, **kwargs)
+
+    print(reference_free, scipy.stats.pearsonr(xs, ys))
+
+ax.legend()
+ax.set_xlabel('Estimated TF before correction: Setting (3)')
+ax.set_ylabel('Copy number consistency between \nsettings (3) and (4): Accuracy')
+for side in ['right', 'top']:
+    ax.spines[side].set_visible(False)
+ax.grid(alpha=0.4, linestyle='--', linewidth=0.5, color='grey')
+ax.set_xscale('log')
+plt.tight_layout()
+plt.savefig(os.path.join(FIGURES_FOLDER, 'tf-vs-acc.png'), dpi=400)
+#plt.show()
+
+
+plt.figure(figsize=(4, 4))
+ax = plt.subplot(1, 1, 1)
+for reference_free in [True, False]:
+    results_1_1 = cna_calling('d1', 'd1', None, gc_codes[idx1_pairs], reference_free=reference_free)
+    results_1a_1a = cna_calling(os.path.join('d1-adapted', METHOD), os.path.join('d1-adapted', 'd1-controls', METHOD), None, gc_codes[idx1_pairs], reference_free=reference_free)
+    results_0_0 = cna_calling('d0', 'd0', None, gc_codes[idx2_pairs], reference_free=reference_free)
+    results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', METHOD), None, gc_codes[idx1_pairs], reference_free=reference_free)
+
+    print(results_1_1[0])
+    kwargs = dict(marker='v', s=40, alpha=0.6)
+    kwargs['color'] = ('goldenrod' if reference_free else 'teal')
+    kwargs['label'] = ('Reference-free' if reference_free else 'Reference-based')
+    xs = [res['tumor-fraction'] for res in results_0_0]
+    ys = [res['tumor-fraction'] for res in results_0_1a]
+    ax.scatter(xs, ys, **kwargs)
+
+    print(reference_free, scipy.stats.pearsonr(xs, ys))
+
+ax.legend()
+ax.set_xlabel('Estimated TF before correction: Setting (3)')
+ax.set_ylabel('Estimated TF after correction: Setting (4)')
+ax.set_title('Tumor fractions')
+for side in ['right', 'top']:
+    ax.spines[side].set_visible(False)
+ax.grid(alpha=0.4, linestyle='--', linewidth=0.5, color='grey')
+ax.plot([0.001, 0.15], [0.001, 0.15], linestyle='--', linewidth=0.5, color='black')
+ax.set_xscale('log')
+ax.set_yscale('log')
+plt.tight_layout()
+plt.savefig(os.path.join(FIGURES_FOLDER, 'tf.png'), dpi=400)
+#plt.show()
+
+
+plt.figure(figsize=(12, 5))
+for k in range(2):
+
+    ax = plt.subplot(1, 2, k + 1)
+
+    COLUMNS = ['Accuracy (copy number)', 'Accuracy (copy number sign)', 'SOV_REFINE', r'$R^2$ (log-ratios)', r'$R^2$ (tumor fractions)', r'$R^2$ (tumor ploidy)', r'$R^2$ (cellular prevalence)', r'$R^2$ (proportion of subclonal CNAs)', 'Average']
+    #METHODS = ['baseline', 'centering-scaling', 'mapping-transport', 'dryclean', 'dagip']
+    METHODS = ['dagip']
+    data = []
+    for method in METHODS:
+        reference_free = True
+        results_1_1 = cna_calling('d1', 'd1', None, gc_codes[idx1_pairs], reference_free=reference_free)
+        results_1a_1a = cna_calling(os.path.join('d1-adapted', method), os.path.join('d1-adapted', 'd1-controls', method), None, gc_codes[idx1_pairs], reference_free=reference_free)
+        results_0_0 = cna_calling('d0', 'd0', None, gc_codes[idx2_pairs], reference_free=reference_free)
+        results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', method), None, gc_codes[idx1_pairs], reference_free=reference_free)
+        metrics_1_1 = compute_metrics(results_1_1, results_1a_1a)
+        metrics_0_0 = compute_metrics(results_0_0, results_0_1a)
+        if k == 0:
+            data.append(np.asarray(list(metrics_1_1.values()), dtype=float))
+            ax.set_title('Consistency between ichorCNA runs (1) and (2):\nIntra-domain consistency')
+        else:
+            data.append(np.asarray(list(metrics_0_0.values()), dtype=float))
+            ax.set_title('Consistency between ichorCNA runs (3) and (4):\nCross-domain consistency')
+    data = np.asarray(data)
+
+    df = pd.DataFrame(
+        np.clip(data.T, 0, None),
+        index=COLUMNS,
+        columns=[PRETTY_NAMES[method] for method in METHODS]
+    )
+    annot = pd.DataFrame(
+        data.T,
+        index=COLUMNS,
+        columns=[PRETTY_NAMES[method] for method in METHODS]
+    )
+    seaborn.heatmap(
+        df, annot=annot, fmt='.3f', ax=ax, yticklabels=(k == 0),
+        cbar=False, linewidths=2, linecolor='white'
+    )
+plt.tight_layout()
+plt.savefig(os.path.join(FIGURES_FOLDER, 'ichorcna-noref-heatmaps.png'), dpi=400)
 plt.show()
 
-# --------------------------------------------
-# Make figures
-# --------------------------------------------
 
-def cn_state_to_color(state):
-    if state == 0:
-        return 'green', 0.6
-    elif state == 1:
-        return 'green', 0.4
-    elif state == 2:
-        return 'white', 0
-    elif state == 3:
-        return 'red', 0.3
-    elif state == 4:
-        return 'red', 0.5
-    elif state >= 4:
-        return 'red', 0.6
-    else:
-        assert state == -1
-        return 'white', 0
+import sys; sys.exit(0)
 
-# Initialize circos sectors
-from pycirclize import Circos
+chr_bed_file, cytoband_file, _ = load_eukaryote_example_dataset('hg38')
 
-bounds = ChromosomeBounds.get_1mb()
+results_1_1 = cna_calling('d1', 'd1', None, gc_codes[idx1_pairs], reference_free=False)
+results_1a_1a = cna_calling(os.path.join('d1-adapted', METHOD), os.path.join('d1-adapted', 'd1-controls', METHOD), None, gc_codes[idx1_pairs], reference_free=False)
+results_0_0 = cna_calling('d0', 'd0', None, gc_codes[idx2_pairs], reference_free=False)
+results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', METHOD), None, gc_codes[idx1_pairs], reference_free=False)
 
+tumour_fractions = np.asarray([x['tumor-fraction'] for x in results_1_1])
+idx = np.argsort(tumour_fractions)
 
-def circle_plot(method_name: str, sample_id: int):
+cna3 = np.asarray([x['copy-number'] for x in results_0_0])[idx, :]
+cna4 = np.asarray([x['copy-number'] for x in results_0_1a])[idx, :]
+cna1 = np.asarray([x['copy-number'] for x in results_1_1])[idx, :]
+cna2 = np.asarray([x['copy-number'] for x in results_1a_1a])[idx, :]
 
-    sectors = {f'chr {c + 1}': bounds[c + 1] - bounds[c] for c in range(22)}
-    circos = Circos(sectors, space=4)
+CHR_SIZES = [250, 244, 200, 192, 183, 172, 161, 147, 140, 135, 137, 135, 116, 109, 103, 92, 85, 82, 60, 66, 48, 30]
+STARTS = np.asarray([0] + list(np.cumsum(CHR_SIZES)))
+STARTS, ENDS = STARTS[:-1], STARTS[1:]
+print(X.shape[1], sum(CHR_SIZES))
+assert X.shape[1] == sum(CHR_SIZES)
 
-    for c, sector in enumerate(circos.sectors):
+# Plot circos plot
+chr_bed_file = os.path.join(DATA_FOLDER, 'hg38_chr.bed')
+cytoband_file = os.path.join(DATA_FOLDER, 'hg38_cytoband.tsv')
+circos = Circos.initialize_from_bed(chr_bed_file, space=3)
+circos.add_cytoband_tracks((95, 100), cytoband_file)
+for start, end, sector in tqdm.tqdm(list(zip(STARTS, ENDS, circos.sectors)), desc='Plotting CNAs'):
+    sector.text(sector.name, size=10)
 
-        # Plot sector axis & name text
-        sector.axis(fc='none', ls='-', lw=0.5, ec='black', alpha=0.5)
-        sector.text(sector.name, size=9)
+    track1 = sector.add_track((60, 90), r_pad_ratio=0.1)
+    track1.axis()
+    track1.heatmap(
+        np.sign(cna4 - cna3)[:, start:end],
+        cmap='bwr', # RdBu
+        vmin=-1,
+        vmax=1
+    )
 
-        track1 = sector.add_track((70, 100))
-        # track1.axis(fc="tomato", alpha=0.5)
-        states = cna_adapted[method_name][sample_id][bounds[c]:bounds[c+1]]
-        ys = log_r_adapted[method_name][sample_id][bounds[c]:bounds[c+1]]
-        xs = np.arange(len(ys))
-        # track1.line(xs, ys)
-        for i in range(len(ys)):
-            x1, x2 = i, i + 1
-            color, alpha = cn_state_to_color(states[i])
-            track1.rect(x1, x2, lw=0, color=color, alpha=alpha)
+    track2 = sector.add_track((25, 55), r_pad_ratio=0.1)
+    track2.axis()
+    track2.heatmap(
+        np.sign(cna2 - cna1)[:, start:end],
+        cmap='PiYG',
+        vmin=-1,
+        vmax=1
+    )
 
-        track2 = sector.add_track((60, 70))
-        xs = np.arange(len(ys))
-        ys = np.zeros(len(ys))
-        track2.line(xs, ys, color='black', lw=0.5, alpha=0.5)
+fig = circos.plotfig()
 
-        # Set Track03 (Radius: 15 - 40)
-        track3 = sector.add_track((30, 60))
-        # track3.axis(fc="lime", alpha=0.5)
-        states = cna[sample_id][bounds[c]:bounds[c+1]]
-        ys = log_r[sample_id][bounds[c]:bounds[c+1]]
-        xs = np.arange(len(ys))
-        # track1.line(xs, ys)
-        for i in range(len(ys)):
-            x1, x2 = i, i + 1
-            color, alpha = cn_state_to_color(states[i])
-            track3.rect(x1, x2, lw=0, color=color, alpha=alpha)
+plt.title(PRETTY_NAMES[METHOD])
 
-    fig = circos.plotfig()
+# Save figure
+os.makedirs(FIGURES_FOLDER, exist_ok=True)
+plt.savefig(os.path.join(FIGURES_FOLDER, f'ichorcna-{METHOD}.png'), dpi=400)
+plt.show()
 
-
-i = 189
-circle_plot('none', i)
-plt.savefig('icna-circle-1.png', dpi=300)
-plt.clf()
-circle_plot('rf-da', i)
-plt.savefig('icna-circle-2.png', dpi=300)
-plt.clf()
-
-print(f'Finished')
+print('Finished.')

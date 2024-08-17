@@ -21,7 +21,7 @@ dataset_domains = {
 }
 
 for dataset in dataset_domains.keys():
-    X, y, d, t, gc_codes, groups, paired_with, num_reads, plasma_sep_delay = [], [], [], [], [], [], [], [], []
+    X, y, d, t, cancer_stages, gc_codes, groups, paired_with, num_reads, plasma_sep_delay = [], [], [], [], [], [], [], [], [], []
     for domain in dataset_domains[dataset]:
         for filename in os.listdir(os.path.join(ROOT, 'preprocessed', domain)):
             filepath = os.path.join(ROOT, 'preprocessed', domain, filename)
@@ -53,6 +53,9 @@ for dataset in dataset_domains.keys():
             # Determine domain
             d.append(domain)
 
+            # Determine cancer stage
+            cancer_stages.append(meta_df.loc[i, 'CancerStage'])
+
             # Determine group
             groups.append(meta_df.loc[i, 'Group'])
 
@@ -69,6 +72,7 @@ for dataset in dataset_domains.keys():
     t = np.asarray(t, dtype=str)
     gc_codes = np.asarray(gc_codes, dtype=str)
     paired_with = np.asarray(paired_with, dtype=str)
+    cancer_stages = np.asarray(cancer_stages, dtype=str)
     groups = np.asarray(groups, dtype=int)
     num_reads = np.asarray(num_reads, dtype=int)
     plasma_sep_delay = np.asarray(plasma_sep_delay)
@@ -76,5 +80,5 @@ for dataset in dataset_domains.keys():
     np.savez(
         os.path.join(ROOT, 'numpy', f'{dataset}.npz'),
         X=X, y=y, d=d, t=t, gc_codes=gc_codes, groups=groups, paired_with=paired_with,
-        num_reads=num_reads, plasma_sep_delay=plasma_sep_delay
+        num_reads=num_reads, plasma_sep_delay=plasma_sep_delay, cancer_stages=cancer_stages
     )

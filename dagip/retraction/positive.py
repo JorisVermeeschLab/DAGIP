@@ -29,7 +29,7 @@ from dagip.retraction.base import Manifold
 class Positive(Manifold):
 
     def _transform(self, X: torch.Tensor) -> torch.Tensor:
-        return torch.exp(X)
+        return torch.nan_to_num(torch.exp(X))
 
     def _inverse_transform(self, X: torch.Tensor) -> torch.Tensor:
         X = torch.relu(X)

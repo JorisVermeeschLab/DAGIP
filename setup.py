@@ -37,6 +37,7 @@ packages = [
     f'{PROJECT_NAME}.ichorcna',
     f'{PROJECT_NAME}.nipt',
     f'{PROJECT_NAME}.nn',
+    f'{PROJECT_NAME}.optimize',
     f'{PROJECT_NAME}.retraction',
     f'{PROJECT_NAME}.stats',
     f'{PROJECT_NAME}.tools',

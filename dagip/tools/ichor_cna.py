@@ -204,7 +204,7 @@ def ichor_cna(
     os.system(cmd)
 
 
-def load_ichor_cna_results(folder: str) -> Dict[str, Any]:
+def load_ichor_cna_results(folder: str, bin_size: int = 1000000) -> Dict[str, Any]:
     results = {
         'model': HMM(),
         'tumor-fraction': None,
@@ -250,7 +250,7 @@ def load_ichor_cna_results(folder: str) -> Dict[str, Any]:
             elements = line.split('\t')
             assert len(elements) >= 4
             chr_id = int(elements[0]) - 1
-            bin_id = (int(elements[1]) - 1) // 1000000
+            bin_id = (int(elements[1]) - 1) // bin_size
             status = int(elements[3])
             profile[chr_id][bin_id] = status
             log_r[chr_id][bin_id] = 0 if (elements[5] == 'NA') else float(elements[5])

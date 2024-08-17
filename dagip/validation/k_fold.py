@@ -19,7 +19,8 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Callable
+import traceback
 
 import numpy as np
 import statsmodels.stats.api as sms
@@ -86,6 +87,7 @@ class KFoldValidation(CrossValidation):
         results_ = {}
         for model_name in CrossValidation.PIPELINES.keys():
             results_[model_name] = []
+        extra_infos = []
 
         for repeat_id in range(self.n_repeats):
 
@@ -97,7 +99,8 @@ class KFoldValidation(CrossValidation):
             self.splits = self.make_splits(random_state=(repeat_id + 17))
             for idx_train, idx_test in self.splits:
 
-                X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
+                X_train, X_test, y_train, y_test, weights_train, extra_info = self.adapt(idx_train, idx_test, da_method)
+                extra_infos.append(extra_info)
 
                 y_target_train.append(y_train)
                 y_target.append(y_test)
@@ -105,7 +108,7 @@ class KFoldValidation(CrossValidation):
                 for model_name, pipeline in CrossValidation.PIPELINES.items():
 
                     # Train supervised model
-                    pipeline.fit(X_train, y_train)
+                    pipeline.fit(X_train, y_train, sample_weight=weights_train)
 
                     # Predict on training set
                     y_pred_train[model_name].append(pipeline.predict_proba(X_train)[:, 1])
@@ -121,6 +124,12 @@ class KFoldValidation(CrossValidation):
                 results_[model_name].append(CrossValidation.compute_evaluation_metrics(y_target, y_pred[model_name]))
                 results_[model_name][-1].update(CrossValidation.compute_evaluation_metrics(y_target_train, y_pred_train[model_name], train=True))
 
+        """
+        extra_info = {}
+        if len(extra_infos) > 0:
+            for key in extra_infos[0].keys():
+                extra_info[key] = np.mean([x[key] for x in extra_infos])
+
         results = {}
         for model_name in CrossValidation.PIPELINES.keys():
             results[model_name] = {}
@@ -129,46 +138,70 @@ class KFoldValidation(CrossValidation):
                 results[model_name][key] = values
                 results[model_name][key + '-mean'] = float(np.mean(values))
                 results[model_name][key + '-confint'] = sms.DescrStatsW(values).tconfint_mean()
-            print(f'Validation results for "{model_name}": {results[model_name]}')
+            #print(f'Validation results for "{model_name}": {results[model_name]}')
+        """
 
+        results = results_
         self.table.add(da_method.name(), results)
 
-        return results
+        return {
+            'extra': extra_info,
+            'supervised-learning': results,
+        }
 
     def validate_by_averaging(self, da_method: BaseMethod):
 
         results_ = {model_name: [] for model_name in CrossValidation.PIPELINES.keys()}
+        extra_infos = []
 
         for repeat_id in range(self.n_repeats):
             
             self.splits = self.make_splits(random_state=(repeat_id + 17))
             for split_id, (idx_train, idx_test) in enumerate(self.splits):
 
-                X_train, X_test, y_train, y_test = self.adapt(idx_train, idx_test, da_method)
+                try:
+                    X_train, X_test, y_train, y_test, weights_train, extra_info = self.adapt(idx_train, idx_test, da_method)
+                    extra_infos.append(extra_info)
 
-                for model_name, pipeline in CrossValidation.PIPELINES.items():
+                    for model_name, pipeline in CrossValidation.PIPELINES.items():
 
-                    # Train supervised model
-                    pipeline.fit(X_train, y_train)
+                        # Train supervised model
+                        pipeline.fit(X_train, y_train, sample_weight=weights_train)
 
-                    # Predict on the held-out sample
-                    y_pred = pipeline.predict_proba(X_test)[:, 1]
+                        # Predict on the held-out sample
+                        y_pred = pipeline.predict_proba(X_test)[:, 1]
 
-                    results_[model_name].append(CrossValidation.compute_evaluation_metrics(y_test, y_pred))
+                        results_[model_name].append(CrossValidation.compute_evaluation_metrics(y_test, y_pred))
+                except:
+                    print(traceback.format_exc())
+                    for model_name, pipeline in CrossValidation.PIPELINES.items():
+                        results_[model_name].append({})
 
+        extra_info = {}
+        if len(extra_infos) > 0:
+            for key in extra_infos[0].keys():
+                extra_info[key] = np.mean([x[key] for x in extra_infos])
+
+        """
         results = {}
         for model_name in CrossValidation.PIPELINES.keys():
             results[model_name] = {}
-            for key in results_[model_name][0].keys():
-                values = [float(results_[model_name][i][key]) for i in range(len(results_[model_name]))]
-                results[model_name][key] = values
-                print(sms.DescrStatsW(values).tconfint_mean())
-                results[model_name][key + '-mean'] = float(np.mean(values))
-                results[model_name][key + 'confint'] = sms.DescrStatsW(values).tconfint_mean()
-            print(f'Validation results for "{model_name}": {results[model_name]}')
+            if len(results_[model_name]) > 0:
+                for key in results_[model_name][0].keys():
+                    values = [float(results_[model_name][i][key]) for i in range(len(results_[model_name]))]
+                    results[model_name][key] = values
+                    #print(sms.DescrStatsW(values).tconfint_mean())
+                    results[model_name][key + '-mean'] = float(np.mean(values))
+                    results[model_name][key + 'confint'] = sms.DescrStatsW(values).tconfint_mean()
+                #print(f'Validation results for "{model_name}": {results[model_name]}')
+        """
+        results = results_
         self.table.add(da_method.name(), results)
 
-        return results
+        return {
+            'supervised-learning': results,
+            'extra': extra_info
+        }
 
     def validate(self, da_method: BaseMethod):
         if self.average_results:

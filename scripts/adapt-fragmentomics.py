@@ -27,8 +27,8 @@ RESULTS_FOLDER = os.path.join(ROOT, '..', 'results', 'corrected')
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
 
-#for MODALITY in ['end-motif-frequencies', 'fragment-length-distributions', 'long-fragment-ratio-profiles', 'nucleosome-positioning-score-profiles']:
-for MODALITY in ['long-fragment-ratio-profiles', 'nucleosome-positioning-score-profiles']:
+#for MODALITY in ['long-fragment-ratio-profiles', 'nucleosome-positioning-score-profiles']:
+for MODALITY in ['end-motif-frequencies', 'fragment-length-distributions', 'long-fragment-ratio-profiles', 'nucleosome-positioning-score-profiles']:
 
 
     with open(os.path.join(DATA_FOLDER, 'D11-D12-batches.json'), 'r') as f:

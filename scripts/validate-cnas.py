@@ -1,5 +1,8 @@
-import argparse
 import sys
+
+print('Started with args: ', sys.argv)
+
+import argparse
 import json
 import os
 
@@ -11,11 +14,10 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 
-from dagip.benchmark.baseline import BaselineMethod
-from dagip.benchmark.gc_correction import GCCorrection
-from dagip.benchmark.centering_scaling import CenteringScaling
-from dagip.benchmark.ot_da import OTDomainAdaptation
-from dagip.benchmark.no_source import NoSourceData
+from dagip.benchmark.no_target import NoTarget
+from dagip.benchmark.no_source import NoSource
+from dagip.benchmark import *
+from dagip.correction.gc import gc_correction
 from dagip.nipt.binning import ChromosomeBounds
 from dagip.spatial import *
 from dagip.retraction.positive import Positive
@@ -43,6 +45,9 @@ DATASET = args.dataset
 # Load reference GC content
 df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc-content-1000kb.csv'))
 gc_content = df['MEAN'].to_numpy()
+bin_chr_names = df['CHR'].to_numpy()
+bin_starts = df['START'].to_numpy()
+bin_ends = df['END'].to_numpy()
 
 # Load data
 filename = 'OV.npz' if (DATASET in {'OV-forward', 'OV-backward'}) else 'HEMA.npz'
@@ -78,32 +83,44 @@ if not np.any(y[d == 0]):
 mask = np.logical_and(gc_content >= 0, np.all(X >= 0, axis=0))
 X = X[:, mask]
 gc_content = gc_content[mask]
+bin_chr_names = bin_chr_names[mask]
+bin_starts = bin_starts[mask]
+bin_ends =  bin_ends[mask]
+
+# GC-correction
+X = gc_correction(X, gc_content)
 
 print('Start validation')
 
 manifold = Positive()
-#manifold = GIPManifold(gc_content)
+pairwise_distances = SquaredEuclideanDistance()
 
-# Cross-validation
-validation = KFoldValidation(
-    X, y, d, gc_codes,
-    target_domain=0, average_results=True, n_splits=5, n_repeats=30,
-    groups=groups,
-    gc_content=gc_content
-)
-ichor_cna_location = os.path.join(ROOT, 'ichorCNA-master')
-folder = os.path.join(ROOT, 'ichor-cna-results', 'ot-da-tmp', DATASET)
-results = {}
-#results['no-source'] = validation.validate(NoSourceData())
-results['baseline'] = validation.validate(BaselineMethod())
-results['center-and-scale'] = validation.validate(CenteringScaling())
-results['gc-correction'] = validation.validate(GCCorrection())
-results['ot-without-gc-correction'] = validation.validate(
-    OTDomainAdaptation(Positive(), MinkowskiDistance(p=2), 'tmp', per_label=True, gc_correction=False)
-)
-results['ot'] = validation.validate(
-    OTDomainAdaptation(manifold, MinkowskiDistance(p=2), 'tmp', per_label=True, gc_correction=True)
-)
+METHODS = [
+    #(BaselineMethod(), 'baseline'),
+    #(CenteringScaling(), 'center-and-scale'),
+    #(KernelMeanMatching(), 'kmm'),
+    (MappingTransport(per_label=False), 'mapping-transport'),  # per_label=True makes the model crash for some reason
+    (OTDomainAdaptation(manifold, pairwise_distances, 'tmp'), 'da'),
+    (DryClean(bin_chr_names, bin_starts, bin_ends, f'tmp/dryclean/{DATASET}'), 'dryclean'),
+]
 
-with open(os.path.join(RESULTS_FOLDER, f'{DATASET}.json'), 'w') as f:
-    json.dump(results, f)
+for method, method_name in METHODS:
+
+    n_repeats = 30 if (method_name != 'dryclean') else 3
+
+    if os.path.exists(os.path.join(RESULTS_FOLDER, f'{DATASET}-{method_name}.json')):
+        continue
+
+    print(f'Processing {DATASET}-{method_name}')
+
+    # Cross-validation
+    validation = KFoldValidation(
+        X, y, d, gc_codes,
+        target_domain=0, average_results=False, n_splits=5, n_repeats=n_repeats,
+        groups=groups,
+    )
+    results = {}
+    results[method_name] = validation.validate(method)
+
+    with open(os.path.join(RESULTS_FOLDER, f'{DATASET}-{method_name}.json'), 'w') as f:
+        json.dump(results, f)

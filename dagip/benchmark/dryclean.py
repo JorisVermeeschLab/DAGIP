@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-#  baseline.py
+#  dryclean.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,20 +19,32 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-from typing import Tuple
+from typing import Tuple, List
 
 import numpy as np
 
 from dagip.benchmark.base import BaseMethod
+from dagip.tools.dryclean import run_dryclean
 
 
-class BaselineMethod(BaseMethod):
+class DryClean(BaseMethod):
 
-    def __init__(self, **kwargs):
+    def __init__(self, bin_chr_names: List[str], bin_starts: List[int], bin_ends: List[int], tmp_folder: str, **kwargs):
         super().__init__(**kwargs)
+        self.bin_chr_names: List[str] = bin_chr_names
+        self.bin_starts: List[int] = bin_starts
+        self.bin_ends: List[int] = bin_ends
+        self.tmp_folder: str = tmp_folder
 
     def normalize_(self, X: np.ndarray, reference: np.ndarray) -> np.ndarray:
-        return X
+        return run_dryclean(
+            self.bin_chr_names,
+            self.bin_starts,
+            self.bin_ends,
+            reference,
+            X,
+            self.tmp_folder
+        )
 
     def adapt_(self, Xs: np.ndarray, Xt: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         weights_source = np.ones(len(Xs))
@@ -40,4 +52,4 @@ class BaselineMethod(BaseMethod):
         return Xs, weights_source, weights_target
 
     def name(self) -> str:
-        return 'Baseline'
+        return 'dryclean'

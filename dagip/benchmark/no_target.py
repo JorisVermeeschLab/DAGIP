@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-#  euclidean.py
+#  no_target.py
 #
 #  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
@@ -19,12 +19,23 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-import torch
+import os
+from typing import Tuple
 
-from dagip.spatial.base import BaseDistance
+import numpy as np
+
+from dagip.benchmark.base import BaseMethod
 
 
-class EuclideanDistance(BaseDistance):
+class NoTarget(BaseMethod):
 
-    def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
-        return torch.cdist(X, Y, p=2)
+    def normalize_(self, X: np.ndarray, reference: np.ndarray) -> np.ndarray:
+        return X
+
+    def adapt_(self, Xs: np.ndarray, Xt: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        weights_source = np.ones(len(Xs))
+        weights_target = np.zeros(len(Xt))
+        return Xs, weights_source, weights_target
+
+    def name(self) -> str:
+        return 'No target'

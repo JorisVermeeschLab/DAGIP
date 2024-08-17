@@ -35,7 +35,7 @@ Alternatively, the samples can be split into groups. For example, if male and fe
 
 where ``Xs`` and ``Ys`` are lists of the same length. Each element is a NumPy array of arbitrary number of rows, and number of columns equal to ``q``.
 
-After inference, the trained model can be used to adapt any new sample in the source domain independently, without having recourse to any additional target cohort:
+After inference, the trained model can be used to adapt any new sample in the source domain independently, without having recourse to any additional target group:
 
 .. code-block:: python
 
@@ -87,6 +87,9 @@ Then, the manifold should be specified:
     from dagip.retraction import GIPManifold
 
     model = DomainAdapter(manifold=GIPManifold(gc_content, frac=0.3))
+
+
+Positive
 
 Hyper-parameters
 ----------------

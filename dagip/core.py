@@ -19,29 +19,30 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+import os
 import os.path
+import math
 from typing import Self, Optional, Tuple, Union, Callable, List, Dict
 
 import numpy as np
 import ot
 import scipy.stats
+import scipy.linalg
 import torch
 import tqdm
 from matplotlib import pyplot as plt
 from scipy.spatial.distance import cdist
-from sklearn.decomposition import KernelPCA
+from sklearn.decomposition import KernelPCA, PCA
 from sklearn.manifold import TSNE
+from sklearn.preprocessing import RobustScaler
 
-from dagip.nipt.binning import ChromosomeBounds
 from dagip.nn.adapter import MLPAdapter
-from dagip.optimize.loss_scaling import LossScaling
-from dagip.plot import plot_ot_plan_degrees
+from dagip.nn.pca import DifferentiablePCA
 from dagip.retraction import Identity
 from dagip.retraction.base import Manifold
-from dagip.retraction.probability_simplex import ProbabilitySimplex
+from dagip.optimize.loss_scaling import LossScaling
 from dagip.spatial.base import BaseDistance
-from dagip.spatial.euclidean import EuclideanDistance
-from dagip.spatial.manhattan import ManhattanDistance
+from dagip.spatial.squared_euclidean import SquaredEuclideanDistance
 from dagip.utils import log_
 
 
@@ -49,19 +50,56 @@ def compute_weights(X: np.ndarray) -> np.ndarray:
     return np.full(len(X), 1. / len(X))
 
 
-def transport_plan(
-        distances: np.ndarray,
-        p: int = 2
-) -> np.ndarray:
+def ot_emd_with_nuclear_norm_reg(C: np.ndarray, X: np.ndarray, Y: np.ndarray, gamma0: np.ndarray, reg_rate: float = 1e-4) -> np.ndarray:
+    n = len(X)
+    m = len(Y)
+    a = np.full(n, 1. / n)
+    b = np.full(m, 1. / m)
+    def f(G: np.ndarray) -> float:
+        M = X - np.dot(G / a[:, np.newaxis], Y)
+        s = np.linalg.svd(M, full_matrices=False, compute_uv=False)
+        return np.sum(s[1:]) / np.sum(s)
+
+    def df(G: np.ndarray) -> np.ndarray:
+        M = X - np.dot(G / a[:, np.newaxis], Y)
+        U, s, Vh = np.linalg.svd(M, full_matrices=False, compute_uv=True)
+        U = np.real(U)
+        V = np.real(Vh.T)
+
+        grad = (np.dot(U[:, 1:], V[:, 1:].T) * np.sum(s) - np.sum(s[1:]) * np.dot(U, V.T)) / np.square(np.sum(s))
+
+        grad = np.dot(grad / a[:, np.newaxis], -Y.T)
+        return grad
+    return ot.optim.cg(a, b, C, reg_rate, f, df, G0=gamma0, log=False)
+
+
+def compute_transport_plan(distances: np.ndarray, X: np.ndarray, Y: np.ndarray, gamma0: Optional[np.ndarray]) -> np.ndarray:
+
+    # Solve the classical unregularized OT problem
     n = len(distances)
     m = distances.shape[1]
     a = np.full(n, 1. / n)
     b = np.full(m, 1. / m)
     assert not np.any(np.isnan(distances))
-    assert not np.any(np.isnan(distances ** p))
-    assert not np.any(np.isinf(distances ** p))
+    assert not np.any(np.isinf(distances))
+    if gamma0 is None:
+        gamma0 = ot.emd(a, b, distances)
 
-    return ot.emd(a, b, distances ** p)
+    """
+    # Solve the regularized OT problem
+    gamma = ot_emd_with_nuclear_norm_reg(distances, X, Y, gamma0, reg_rate=1e-4)
+    
+    import matplotlib.pyplot as plt
+    plt.subplot(1, 2, 1)
+    plt.imshow(gamma0)
+    plt.subplot(1, 2, 2)
+    plt.imshow(gamma)
+    plt.show()
+    import sys; sys.exit(0)
+    """
+    gamma = gamma0
+
+    return gamma
 
 
 def default_u_test(x1: np.ndarray, x2: np.ndarray) -> float:
@@ -80,7 +118,38 @@ def compute_p_values(X1: np.ndarray, X2: np.ndarray, u_test: Callable) -> np.nda
     return np.asarray(p_values)
 
 
+def compute_all_p_values(X1: torch.Tensor, X2: torch.Tensor, u_test: Callable) -> torch.Tensor:
+    X1 = X1.cpu().data.numpy()
+    X2 = X2.cpu().data.numpy()
+    p_values = []
+    for k in range(X1.shape[1]):
+        if np.all(X1[:, k] == X1[0, k]) and np.all(X2[:, k] == X1[0, k]):
+            p_values.append(0.5)
+        else:
+            p_values.append(u_test(X1[:, k], X2[:, k]))
+    return torch.FloatTensor(np.asarray(p_values))
+
+
+def interquartile_ranges(X: torch.Tensor) -> torch.Tensor:
+    return torch.quantile(X, 0.75, dim=0) - torch.quantile(X, 0.25, dim=0)
+
+
 def compute_s_values(X: torch.Tensor) -> torch.Tensor:
+
+    # Median
+    mu = torch.quantile(X, 0.5, dim=0).unsqueeze(0)
+
+    # Inter-quartile range
+    sigma = interquartile_ranges(X).unsqueeze(0)
+    mask = (sigma > 0)
+    sigma = mask * sigma + (~mask) * torch.mean(sigma[mask])
+
+    # Standardization
+    scale = 1. / sigma
+    return scale * (X - mu)
+
+
+def compute_stats(X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
     # Median
     mu = torch.quantile(X, 0.5, dim=0).unsqueeze(0)
@@ -88,22 +157,84 @@ def compute_s_values(X: torch.Tensor) -> torch.Tensor:
     # Inter-quartile range
     sigma = (torch.quantile(X, 0.75, dim=0) - torch.quantile(X, 0.25, dim=0)).unsqueeze(0)
     mask = (sigma > 0)
-    sigma = mask * sigma + (~mask) * 1
+    sigma = mask * sigma + (~mask) * torch.mean(sigma[mask])
 
     # Standardization
     scale = 1. / sigma
-    return scale * (X - mu)
+
+    return mu, scale
 
 
-def barycentric_mapping(
-        X1: np.ndarray,
-        X2: np.ndarray,
-        p: int = 2
-) -> np.ndarray:
-    D = cdist(X1, X2)
-    gamma = transport_plan(D, p=p)
-    gamma /= np.sum(gamma, axis=1)[:, np.newaxis]
-    return np.dot(gamma, X2)
+def compute_convergence_threshold(X1: np.ndarray, X2: np.ndarray, u_test: Callable = default_u_test) -> float:
+    scaler = RobustScaler()
+    scaler.fit(X2)
+    X1_cas = scaler.inverse_transform(RobustScaler().fit_transform(X1))
+    p_values = compute_p_values(X1_cas, X2, u_test)
+    return float(np.median(p_values))
+
+
+def center_and_scale(X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
+    target_scaler = RobustScaler()
+    target_scaler.fit(X2)
+    source_scaler = RobustScaler()
+    X_adapted = source_scaler.fit_transform(X1)
+    return target_scaler.inverse_transform(X_adapted)
+
+
+def univariate_wasserstein_distances(X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
+    m1 = torch.quantile(X1, 0.5, dim=0)
+    m2 = torch.quantile(X2, 0.5, dim=0)
+    c1 = torch.square(interquartile_ranges(X1))
+    c2 = torch.square(interquartile_ranges(X2))
+    return torch.square(m1 - m2) + c1 + c2 - 2 * torch.sqrt(c1 * c2)
+
+
+class BlockTransportPlan:
+
+    def __init__(self, distance: BaseDistance, block_sizes_1: List[int], block_sizes_2: List[int]):
+        self.distance: BaseDistance = distance
+        self.block_sizes_1: List[int] = block_sizes_1
+        self.block_sizes_2: List[int] = block_sizes_2
+        self.n_blocks: int = len(self.block_sizes_1)
+        self.n: int = int(sum(self.block_sizes_1))
+        self.m: int = int(sum(self.block_sizes_2))
+        self.gammas: List[Optional[torch.Tensor]] = [None for _ in range(self.n_blocks)]
+        self.X2_barycentric: Optional[torch.Tensor] = None
+
+    @torch.no_grad()
+    def update(self, X1: torch.Tensor, X2: torch.Tensor) -> None:
+        X2_barycentric = []
+        offset1, offset2 = 0, 0
+        for k, (size1, size2) in enumerate(zip(self.block_sizes_1, self.block_sizes_2)):
+            distances = self.distance.cdist(X1[offset1:offset1+size1], X2[offset2:offset2+size2])
+            gamma = torch.FloatTensor(compute_transport_plan(
+                distances.cpu().data.numpy(),
+                X1[offset1:offset1+size1].cpu().data.numpy(),
+                X2[offset2:offset2+size2].cpu().data.numpy(),
+                gamma0=(self.gammas[k].cpu().data.numpy() if (self.gammas[k] is not None) else None)
+            ))
+            self.gammas[k] = gamma
+            X2_barycentric.append(self.distance.barycentric_mapping(gamma, X2[offset2:offset2+size2]))
+        X2_barycentric = torch.cat(X2_barycentric, dim=0)
+
+        mu = torch.quantile(X2_barycentric, 0.5, dim=0).unsqueeze(0)
+        X2_barycentric = X2_barycentric - mu
+        variance_ratio = torch.sqrt(torch.mean(np.square(interquartile_ranges(X2))) / torch.mean(np.square(interquartile_ranges(X2_barycentric))))
+        X2_barycentric = X2_barycentric * variance_ratio
+        X2_barycentric = X2_barycentric + mu
+        #X2_barycentric = torch.FloatTensor(center_and_scale(X2_barycentric.cpu().data.numpy(), X2.cpu().data.numpy()))
+
+        self.X2_barycentric = X2_barycentric
+
+    def __len__(self) -> int:
+        if self.X2_barycentric is None:
+            return 0
+        else:
+            return len(self.X2_barycentric)
+
+    def __getitem__(self, idx: np.ndarray) -> torch.Tensor:
+        assert self.X2_barycentric is not None
+        return self.X2_barycentric[idx, :].detach()
 
 
 def _ot_da(
@@ -111,17 +242,22 @@ def _ot_da(
         X2: Union[np.ndarray, List[np.ndarray]],
         folder: Optional[str] = None,
         manifold: Manifold = Identity(),
-        pairwise_distances: BaseDistance = EuclideanDistance(),
+        distance: BaseDistance = SquaredEuclideanDistance(),
         u_test: Callable = default_u_test,
-        var_penalty: float = 0.0,  # 0.01
-        reg_rate: float = 5,  # 0.1
-        max_n_iter: int = 4000,  # 4000
-        convergence_threshold: float = 0.5,  # 0.5
-        nn_n_hidden: int = 32,  # 32
-        nn_n_layers: int = 4,  # 4
-        lr: float = 0.005,  # 0.005
+        reg_rate: float = 0.002,  # 0.002
+        max_n_iter: int = 500,  # 500
+        convergence_threshold: Union[float, str] = 'auto',  # 'auto'
+        nn_n_hidden: Union[int, str] = 'auto',  # 'auto'
+        nn_n_layers: int = 2,  # 5
+        aaa = 1,
+        lr: float = 0.005,
+        l2_reg: float = 2e-07,  # 2e-07
+        batch_size: int = 8,  # 4
         verbose: bool = True
 ) -> Tuple[np.ndarray, MLPAdapter]:
+
+    if folder is not None:
+        os.makedirs(folder, exist_ok=True)
 
     X1s = [X1] if (not isinstance(X1, list)) else X1
     X2s = [X2] if (not isinstance(X2, list)) else X2
@@ -133,44 +269,64 @@ def _ot_da(
     X1 = np.concatenate(X1s, axis=0)
     X2 = np.concatenate(X2s, axis=0)
 
-    with torch.no_grad():
-        X1_second = manifold(X1)
-        target_diffs_1 = compute_s_values(X1_second)
-        target_diffs_2 = compute_s_values(torch.FloatTensor(X2))
-        target_diffs = torch.cat([target_diffs_1, target_diffs_2], dim=0)
+    # Determine number of hidden neurons
+    n_samples = X1.shape[0]
+    n_features = X1.shape[1]
+    nn_n_hidden = max(8, int(min(0.002 * n_features, 20000 * n_samples / n_features)))
 
-    x2_variance = np.mean(np.var(X2, axis=0))
+    # Determine convergence threshold
+    proposed_threshold = compute_convergence_threshold(X1, X2, u_test=u_test)
+    print(f'Automatic convergence threshold selection: {proposed_threshold}')
+    if convergence_threshold == 'auto':
+        convergence_threshold = proposed_threshold
+    else:
+        convergence_threshold = float(convergence_threshold)
+
+    n_features = X1.shape[1]
+    assert X1.shape[1] == X2.shape[1]
 
     # Determine convergence criterion
     p_values = compute_p_values(X1, X2, u_test)
     median_p_value = np.median(p_values)
     log_(f'Median p-value: {median_p_value}', verbose=verbose)
 
-    # Compute the order of magnitude of the bias
-    X2_barycentric = barycentric_mapping(X1, X2)
-    avg_deviation = np.mean(np.abs(X1 - X2_barycentric))
-
     X1 = torch.FloatTensor(X1)
     X2 = torch.FloatTensor(X2)
-    X0 = None
 
-    # Compute initial transport plans
-    X1_second = manifold.transform(X1)
-    gammas = []
-    offset1, offset2 = 0, 0
-    for size1, size2 in zip(block_sizes_1, block_sizes_2):
-        distances = pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
-        gammas.append(torch.FloatTensor(transport_plan(distances.cpu().data.numpy())))
+    # Define subspace mapping
+    #subspace_mapping = DifferentiablePCA(aaa)
+    #subspace_mapping.fit(X2)
+    subspace_mapping = lambda x: x
 
-    adapter = MLPAdapter(X1.size()[0], X1.size()[1], tuple([nn_n_hidden] * nn_n_layers), manifold, eta=avg_deviation)
+    with torch.no_grad():
+        target_mu, target_scale = compute_stats(X2)
+        _, target_scale_subspace = compute_stats(subspace_mapping(X2))
+        X1_second = manifold(X1)
+        target_diffs = compute_s_values(X1_second)
+
+    loss_scaling = LossScaling()
+
+    # Compute initial transport plan
+    transport_plan = BlockTransportPlan(distance, block_sizes_1, block_sizes_2)
+    transport_plan.update(subspace_mapping(X1), subspace_mapping(X2))
+
+    # Initialize NN
+    adapter = MLPAdapter(X1.size()[0], X1.size()[1], tuple([nn_n_hidden] * nn_n_layers), manifold)
+    is_constant = torch.logical_and(
+        torch.all(X1 == X1[0, :].unsqueeze(0), dim=0),
+        torch.all(X2 == X1[0, :].unsqueeze(0), dim=0)
+    )
+    adapter.set_constant_mask(is_constant)
+
+    with torch.no_grad():
+        adapter.init_bias(X1, torch.quantile(X2, 0.5, dim=0))
+
     best_state_dict = adapter.state_dict()
-    best_global_obj = 0.0
+    best_global_obj = np.inf
 
     optimizer = torch.optim.Adam(adapter.parameters(), lr=lr)
-
-    loss1_scaling = LossScaling()
-    loss2_scaling = LossScaling()
-    loss3_scaling = LossScaling()
+    decay_rate = math.exp(math.log(1e-3) / max_n_iter)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=decay_rate)
 
     variances = []
     losses = []
@@ -180,92 +336,72 @@ def _ot_da(
 
         optimizer.zero_grad()
 
-        # Adaptation on the manifold
-        X1_second = adapter(X1)
-        if X0 is None:
-            X0 = X1_second.cpu().data.numpy()
+        # Update OT solution
+        with torch.no_grad():
+            X1_second = adapter(X1)
+            transport_plan.update(subspace_mapping(X1_second), subspace_mapping(X2))
 
-        # Define targets
-        #if (iteration % 10 == 0) or (X2_prime is None):
-        #    X2_prime = torch.FloatTensor(ot_mapping(X1_second.cpu().data.numpy(), X2))
+        total_loss, total_reg, total_reg2 = 0, 0, 0
+        all_idx = np.arange(0, len(transport_plan))
+        np.random.shuffle(all_idx)
+        n_batches = int(math.ceil(len(transport_plan) / float(batch_size)))
+        for idx in np.array_split(all_idx, n_batches):
 
-        # Compensate the reduction of variance caused by the OT mapping
-        #factor = torch.mean(torch.std(torch.FloatTensor(X2), dim=0)) / torch.mean(torch.std(X2_prime, dim=0))
-        #mu = torch.mean(X2_prime, dim=0).unsqueeze(0)
-        #X2_prime = factor * (X2_prime - mu) + mu
+            optimizer.zero_grad()
 
-        # Wasserstein distance
-        loss1, norm = 0.0, 0.0
-        offset1, offset2 = 0, 0
-        for size1, size2, gamma in zip(block_sizes_1, block_sizes_2, gammas):
+            # Adaptation on the manifold
+            X1_second_batch = adapter(X1[idx, :])
 
-            # Compute pairwise distances
-            distances = pairwise_distances(X1_second[offset1:offset1+size1], X2[offset2:offset2+size2])
+            # Wasserstein distance
+            loss = torch.mean(torch.square(subspace_mapping(X1_second_batch) - transport_plan[idx]) * target_scale)
 
-            # OT distance
-            mask = (gamma > 1e-15)
-            gamma_ = gamma[mask]
-            distances_ = distances[mask]
+            # Univariate Wasserstein distances
+            loss = loss + 0.001 * torch.mean(univariate_wasserstein_distances(X1_second_batch * target_scale, X2 * target_scale))
 
-            # Re-weight cohort by its size
-            loss1 = loss1 + torch.sum(gamma_ * torch.square(distances_)) * len(gamma_)
-            norm = norm + len(gamma_)
-        loss1 = loss1 / norm
-        loss1 = loss1_scaling(loss1)
+            # Regularization function
+            if reg_rate > 0:
+                diffs_batch = (X1_second_batch - target_mu) * target_scale
+                reg = torch.mean(torch.square(diffs_batch - target_diffs[idx]) * target_scale)
+                loss = loss + reg_rate * reg
+                total_reg += reg.item()
 
-        # Encourage the variances to be identical
-        if var_penalty > 0:
-            x1_variance = torch.mean(torch.var(X1_second, dim=0))
-            variances.append(x1_variance.item())
-            loss2 = torch.square(torch.sqrt(x1_variance) - np.sqrt(x2_variance))
-            loss2 = loss2_scaling(loss2)
-        else:
-            loss2 = torch.FloatTensor([0])
+            # Re-scale loss function
+            loss = loss_scaling(loss)
 
-        # Regularization function
-        X12 = torch.cat([X1_second, X2], dim=0)
-        diffs = compute_s_values(X12)
-        loss3 = torch.mean(torch.square(diffs - target_diffs))
-        loss3 = loss3_scaling(loss3)
+            # L2 regularization
+            if l2_reg > 0:
+                for param in adapter.l2_reg_parameters():
+                    loss = loss + l2_reg * torch.sum(torch.square(param))
 
-        # Compute total loss function
-        total_loss = loss1 + var_penalty * loss2 + reg_rate * loss3
+            loss.backward()
 
-        losses.append([loss1.item(), loss2.item(), loss3.item()])
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        scheduler.step()
+
+        losses.append([total_loss, total_reg])
 
         # Check convergence
-        p_values = compute_p_values(X1_second.cpu().data.numpy(), X2.cpu().data.numpy(), u_test)
-        median_p_values.append(float(np.median(p_values)))
-        pbar.set_description(f'p={median_p_values[-1]:.3f}')
-        if median_p_values[-1] >= convergence_threshold:
-            break
-        if (iteration > 10) and (iteration % 4 == 0):
-            reg_rate *= 0.9
+        #p_values = compute_p_values(X1_second.cpu().data.numpy(), X2.cpu().data.numpy(), u_test)
+        #median_p_values.append(float(np.median(p_values)))
+        #pbar.set_description(f'p={median_p_values[-1]:.3f}')
+        #if median_p_values[-1] >= convergence_threshold:
+        #    break
+        #reg_rate *= 0.999
 
         # Check global objective
-        if median_p_values[-1] > best_global_obj:
-            best_global_obj = median_p_values[-1]
-            best_state_dict = adapter.state_dict()
-
-        # Update parameters
-        optimizer.step()
-
-        # Backpropagation
-        total_loss.backward()
-
-        # Update parameters
-        optimizer.step()
+        if total_loss < best_global_obj:
+            best_global_obj = total_loss
+            best_state_dict = adapter.state_dict().copy()
 
     # Restore best NN model
     adapter.load_state_dict(best_state_dict)
     adapter.eval()
-    X1_second = adapter(X1)
-    X1_second = X1_second.cpu().data.numpy()
+    X1_second = adapter(X1).cpu().data.numpy()
 
     losses = np.asarray(losses, dtype=float)
-    gamma = gamma.cpu().data.numpy()
-
-    X1_barycentric = barycentric_mapping(X1.cpu().data.numpy(), X2.cpu().data.numpy())
 
     X2 = X2.cpu().data.numpy()
 
@@ -274,13 +410,6 @@ def _ot_da(
         try:
             if not os.path.isdir(folder):
                 os.makedirs(folder)
-
-            plt.plot(variances)
-            plt.axhline(y=x2_variance)
-            plt.xlabel('Iterations')
-            plt.ylabel('Total X1 variance')
-            plt.savefig(os.path.join(folder, 'total-variance.png'), dpi=300)
-            plt.clf()
 
             p_values = compute_p_values(X1_second, X2, u_test)
             log_(f'Median p-value after correction: {np.median(p_values)}', verbose=verbose)
@@ -314,47 +443,32 @@ def _ot_da(
             plt.ylabel('Median p-value')
             plt.savefig(os.path.join(folder, 'median-p-values.png'), dpi=300)
             plt.clf()
-            plt.plot(losses[:, 0], label='Loss')
-            plt.plot(losses[:, 1], label='Variance penalty')
-            plt.plot(losses[:, 2], label='Regularization')
-            #plt.plot(losses[:, 3], label='Bias function regularization')
+            plt.plot(losses[:, 0], label='OT loss')
+            plt.plot(losses[:, 1], label='Regularization')
             plt.legend()
             plt.xlabel('Iterations')
             plt.ylabel('Loss function')
             plt.savefig(os.path.join(folder, 'loss.png'), dpi=300)
             plt.clf()
 
-            plt.imshow(gamma)
-            plt.savefig(os.path.join(folder, 'transport-plan.png'), dpi=300)
-            plt.clf()
-
-            ax = plt.subplot(1, 1, 1)
-            plot_ot_plan_degrees(ax, gamma)
-            plt.savefig(os.path.join(folder, 'transport-plan-degrees.png'), dpi=300)
-            plt.clf()
-
+            transport_plan = BlockTransportPlan(distance, block_sizes_1, block_sizes_2)
+            transport_plan.update(torch.FloatTensor(X1_second), torch.FloatTensor(X2))
+            X1_barycentric = transport_plan.X2_barycentric.cpu().data.numpy()
+            pca = PCA(n_components=25)
+            pca.fit(X2)
             for transformer, filename in zip([KernelPCA(), TSNE()], ['kpca.png', 'tsne.png']):
                 plt.subplot(1, 2, 1)
-                coords = transformer.fit_transform(np.concatenate([X1, X2, X1_barycentric], axis=0))
+                coords = transformer.fit_transform(pca.transform(np.concatenate([X1, X2, X1_barycentric], axis=0)))
                 plt.scatter(coords[:len(X1), 0], coords[:len(X1), 1], alpha=0.4)
                 plt.scatter(coords[len(X1):len(X1)+len(X2), 0], coords[len(X1):len(X1)+len(X2), 1], alpha=0.4)
                 plt.scatter(coords[len(X1) + len(X2):, 0], coords[len(X1) + len(X2):, 1], alpha=0.4, marker='x')
                 plt.subplot(1, 2, 2)
-                coords = transformer.fit_transform(np.concatenate([X1_second, X2, X1_barycentric], axis=0))
+                coords = transformer.fit_transform(pca.transform(np.concatenate([X1_second, X2, X1_barycentric], axis=0)))
                 plt.scatter(coords[:len(X1), 0], coords[:len(X1), 1], alpha=0.4)
                 plt.scatter(coords[len(X1):len(X1)+len(X2), 0], coords[len(X1):len(X1)+len(X2), 1], alpha=0.4)
                 plt.scatter(coords[len(X1) + len(X2):, 0], coords[len(X1) + len(X2):, 1], alpha=0.4, marker='x')
                 plt.savefig(os.path.join(folder, filename), dpi=300)
                 plt.clf()
-
-            transformer = KernelPCA()
-            coords = transformer.fit_transform(X1)
-            plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4, label='Original X1')
-            coords = transformer.transform(X0)
-            plt.scatter(coords[:, 0], coords[:, 1], alpha=0.4, label='X1 at t=1')
-            plt.legend()
-            plt.savefig(os.path.join(folder, 'initial-X1.png'), dpi=300)
-            plt.clf()
 
         except (ValueError, IndexError):
             pass
@@ -384,23 +498,68 @@ class DomainAdapter:
     def __init__(self, **kwargs):
         self.kwargs: Dict  = kwargs
         self.adapter: Optional[MLPAdapter] = None
+        self.feature_mask: Optional[np.ndarray] = None
+
+    def feature_filtering(
+            self,
+            X: Union[List[np.ndarray], np.ndarray],
+            Y: Union[None, List[np.ndarray], np.ndarray],
+            fit: bool = False
+    ) -> Tuple[Union[List[np.ndarray], np.ndarray], Union[None, List[np.ndarray], np.ndarray]]:
+        if isinstance(X, list):
+            X_cat = np.concatenate(X, axis=0)
+            if Y is not None:
+                Y_cat = np.concatenate(Y, axis=0)
+            else:
+                Y_cat = None
+        else:
+            X_cat, Y_cat = X, Y
+        if fit or (self.feature_mask is None):
+            self.feature_mask = ~np.logical_and(
+                np.all(X_cat == X_cat[np.newaxis, 0, :], axis=0),
+                np.all(Y_cat == X_cat[np.newaxis, 0, :], axis=0)
+            )
+        if isinstance(X, list):
+            X = [arr[:, self.feature_mask] for arr in X]
+            if Y is not None:
+                Y = [arr[:, self.feature_mask] for arr in Y]
+            else:
+                Y = None
+            return X, Y
+        else:
+            if Y is not None:
+                return X[:, self.feature_mask], Y[:, self.feature_mask]
+            else:
+                return X[:, self.feature_mask], Y
+
+    def pad(self, X_original: np.ndarray, X: np.ndarray) -> np.ndarray:
+        if X_original.shape == X.shape:
+            return X
+        else:
+            X_out = np.copy(X_original)
+            X_out[:, self.feature_mask] = X
+            return X_out
 
     def fit(self, X: Union[List[np.ndarray], np.ndarray], Y: Union[List[np.ndarray], np.ndarray]) -> Self:
-        X_adapted, adapter = _ot_da(X, Y, **self.kwargs)
+        X_sub, Y_sub = self.feature_filtering(X, Y, fit=True)
+        X_adapted, adapter = _ot_da(X_sub, Y_sub, **self.kwargs)
+        assert X_adapted.shape[1] == int(np.sum(self.feature_mask))
         self.adapter = adapter
         return self
 
     def fit_transform(self, X: Union[List[np.ndarray], np.ndarray], Y: Union[List[np.ndarray], np.ndarray]) -> Union[List[np.ndarray], np.ndarray]:
-        X_adapted, adapter = _ot_da(X, Y, **self.kwargs)
+        X_sub, Y_sub = self.feature_filtering(X, Y, fit=True)
+        X_adapted, adapter = _ot_da(X_sub, Y_sub, **self.kwargs)
         self.adapter = adapter
         if isinstance(X, list):
             ends = list(np.cumsum([len(mat) for mat in X]))
             starts = [0] + ends[:-1]
-            X_adapted = [X_adapted[start:end] for start, end in zip(starts, ends)]
+            X_adapted = [self.pad(mat, X_adapted[start:end, :]) for mat, start, end in zip(X, starts, ends)]
         return X_adapted
 
-    def transform(self, X: Union[List[np.ndarray]]) -> Union[List[np.ndarray]]:
+    def transform(self, X: Union[List[np.ndarray], np.ndarray]) -> Union[List[np.ndarray], np.ndarray]:
+        X_sub, _ = self.feature_filtering(X, None, fit=False)
         if isinstance(X, list):
-            return [self.adapter.adapt(mat) for mat in X]
+            return [self.pad(mat1, self.adapter.adapt(mat2)) for mat1, mat2 in zip(X, X_sub)]
         else:
-            return self.adapter.adapt(X)
+            return self.pad(X, self.adapter.adapt(X_sub))

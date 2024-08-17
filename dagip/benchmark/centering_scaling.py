@@ -2,7 +2,7 @@
 #
 #  centering_scaling.py
 #
-#  Copyright 2022 Antoine Passemiers <antoine.passemiers@gmail.com>
+#  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -19,6 +19,8 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+from typing import Tuple
+
 import numpy as np
 from sklearn.preprocessing import RobustScaler
 
@@ -27,41 +29,21 @@ from dagip.benchmark.base import BaseMethod
 
 class CenteringScaling(BaseMethod):
 
-    def __init__(self, with_std: bool = True):
-        super().__init__(False, False)
+    def __init__(self, with_std: bool = True, **kwargs):
+        super().__init__(**kwargs)
         self.with_std: bool = bool(with_std)
 
-    def adapt(
-            self,
-            X: np.ndarray,
-            y: np.ndarray,
-            d: np.ndarray,
-            sample_names: np.ndarray,
-            target_domain: int = 0
-    ):
+    def normalize_(self, X: np.ndarray, reference: np.ndarray) -> np.ndarray:
+        return X
 
-        X_adapted = np.copy(X)
-        for label in np.unique(y):
-
-            mask = np.logical_and(d == target_domain, y == label)
-            if not np.any(mask):
-                continue
-
-            target_scaler = RobustScaler(with_scaling=self.with_std)
-            target_scaler.fit(X[mask, :])
-
-            for domain in np.unique(d):
-                if domain != target_domain:
-                    mask = np.logical_and(d == domain, y == label)
-                    if not np.any(mask):
-                        continue
-
-                    X_adapted[mask, :] = RobustScaler(with_scaling=self.with_std).fit_transform(X_adapted[mask, :])
-                    X_adapted[mask, :] = target_scaler.inverse_transform(X_adapted[mask, :])
-        return X_adapted
-
-    def adapt_sample_wise(self, X: np.ndarray) -> np.ndarray:
-        raise NotImplementedError()
+    def adapt_(self, Xs: np.ndarray, Xt: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        target_scaler = RobustScaler()
+        target_scaler.fit(Xt)
+        source_scaler = RobustScaler()
+        X_adapted = target_scaler.inverse_transform(source_scaler.fit_transform(Xs))
+        weights_source = np.ones(len(Xs))
+        weights_target = np.ones(len(Xt))
+        return X_adapted, weights_source, weights_target
 
     def name(self) -> str:
-        return 'Centering-scaling'
+        return 'Center-and-scale'

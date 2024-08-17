@@ -19,44 +19,23 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
+import os
+from typing import Tuple
+
 import numpy as np
 
 from dagip.benchmark.base import BaseMethod
 
 
-class NoSourceData(BaseMethod):
+class NoSource(BaseMethod):
 
-    def __init__(self):
-        super().__init__(False, False)
+    def normalize_(self, X: np.ndarray, reference: np.ndarray) -> np.ndarray:
+        return X
 
-    def adapt(
-            self,
-            X: np.ndarray,
-            y: np.ndarray,
-            d: np.ndarray,
-            sample_names: np.ndarray,
-            target_domain: int = 0
-    ):
-        X_adapted = np.copy(X)
-        for label in np.unique(y):
-
-            target_mask = np.logical_and(d == target_domain, y == label)
-            if not np.any(target_mask):
-                continue
-
-            for domain in np.unique(d):
-                if domain != target_domain:
-                    mask = np.logical_and(d == domain, y == label)
-
-                    n = int(np.sum(mask))
-                    idx_repl = np.random.randint(0, int(np.sum(target_mask)), size=n)
-
-                    X_adapted[mask, :] = X_adapted[target_mask, :][idx_repl, :]
-
-        return X_adapted
-
-    def adapt_sample_wise(self, X: np.ndarray) -> np.ndarray:
-        raise NotImplementedError()
+    def adapt_(self, Xs: np.ndarray, Xt: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        weights_source = np.zeros(len(Xs))
+        weights_target = np.ones(len(Xt))
+        return Xs, weights_source, weights_target
 
     def name(self) -> str:
-        return 'No source data'
+        return 'No source'

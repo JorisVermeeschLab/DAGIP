@@ -39,17 +39,35 @@ def loo_influence_analysis(X: np.ndarray, y: np.ndarray) -> np.ndarray:
         mask[i] = False
         params = np.zeros(len(X))
         params[mask] = get_parameters(X[mask, :], y[mask])
-        #scores[i] = np.mean(np.abs(base_params[i] - params[i]))
         scores[i] = np.mean(np.abs(base_params - params))
     return scores
 
 
-def scatterplot_with_sample_importances(ax, X, y, d, labels, palette):
+def scatterplot_with_sample_importances(ax, axl, X, y, d, labels, cancer_stages, style_dict, stage0_label='Stage 0', legend: bool = False):
 
-    fisher_info = loo_influence_analysis(X, y)
-    #fisher_info = reglog_fisher_kernel(X, y, d)
+    labels = np.copy(labels)
+
+    palette = {key: value[0] for key, value in style_dict.items()}
+    markers = {key: value[1] for key, value in style_dict.items()}
+
+    for i in range(len(labels)):
+        key = labels[i]
+        if cancer_stages[i] == '0':
+            labels[i] += '-stage0'
+            palette[key + '-stage0'] = palette[key]
+            markers[key + '-stage0'] = 'X'
 
     coords = TSNE().fit_transform(X)
+
+    sizes = [39, 40, 90, 140, 200]
+    size_labels = [stage0_label, 'Stage I', 'Stage II', 'Stage III', 'Stage IV']
+
+    cancer_stage_info_available = False
+    importances = np.full(len(X), sizes[0])
+    for k, stage in enumerate(['0', 'I', 'II', 'III', 'IV']):
+        importances[cancer_stages == stage] = sizes[k]
+        if np.any(cancer_stages == stage):
+            cancer_stage_info_available = True
 
     idx = np.arange(len(coords))
     np.random.shuffle(idx)  # Shuffle display order to ensure no class is dominating the visual space
@@ -58,25 +76,50 @@ def scatterplot_with_sample_importances(ax, X, y, d, labels, palette):
         x=coords[idx, 0],
         y=coords[idx, 1],
         hue=labels[idx],
+        hue_order=list(palette.keys()),
         style=labels[idx],
-        size=fisher_info[idx],
-        sizes=(10, 250),
+        size=importances[idx],
+        sizes=(min(sizes), max(sizes)),
         palette=palette,
-        markers={key: 'o' for key in palette.keys()}
+        markers=markers,
+        legend=False
     )
     ax.grid(alpha=0.4, linestyle='--', linewidth=0.5, color='grey')
     for side in ['right', 'top']:
         ax.spines[side].set_visible(False)
-    ax.set_xlabel('First component')
-    ax.set_ylabel('Second component')
+    ax.set_xlabel('First t-SNE component', fontsize=10)
+    ax.set_ylabel('Second t-SNE component', fontsize=10)
 
-    handles, labels = ax.get_legend_handles_labels()
-    mask = [label in palette.keys() for label in labels]
-    ax.legend(
-        handles=[handle for handle, to_keep in zip(handles, mask) if to_keep],
-        labels=[label for label, to_keep in zip(labels, mask) if to_keep],
-        prop={'size': 8}
-    )
+    # Custom legend
+    if legend:
+        handles, labels = [], []
+
+        # Marker color labels
+        for label, (color, marker) in style_dict.items():
+            handles.append(plt.scatter([], [], s=sizes[0], color=color, marker=marker))
+            labels.append(label)
+
+        if cancer_stage_info_available:
+
+            # Add white space
+            handles.append(plt.scatter([], [], s=0))
+            labels.append(' ')
+
+            # Marker size labels
+            if np.any(cancer_stages == '0'):
+                handles.append(plt.scatter([], [], s=sizes[0], color='black', marker='x'))
+                labels.append(stage0_label)
+            for size, label in zip(sizes[1:], size_labels[1:]):
+                handles.append(plt.scatter([], [], s=size, color='black'))
+                labels.append(label)
+        
+        axl.legend(
+            handles=handles,
+            labels=labels,
+            prop={'size': 10},
+            #bbox_to_anchor=(1.1, 1.05)
+            loc='center left'
+        )
 
 
 def plot_end_motif_freqs(ax, x: np.ndarray):

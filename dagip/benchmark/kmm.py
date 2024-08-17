@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-#  kl_divergence.py
+#  kmm.py
 #
 #  Copyright 2024 Antoine Passemiers <antoine.passemiers@gmail.com>
 #
@@ -19,21 +19,26 @@
 #  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #  MA 02110-1301, USA.
 
-from abc import abstractmethod
+import os
+from typing import Tuple
 
-import torch
+import numpy as np
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+from adapt.instance_based import KMM
 
-from dagip.spatial.base import BaseDistance
+from dagip.benchmark.base import BaseMethod
 
 
-class KLDivergence(BaseDistance):
+class KernelMeanMatching(BaseMethod):
 
-    def pairwise_distances(self, X: torch.Tensor, Y: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-        X = X.unsqueeze(1)
-        Y = Y.unsqueeze(0)
-        X = torch.clamp(X, eps, 1)
-        Y = torch.clamp(Y, eps, 1)
-        M = 0.5 * (X + Y)
-        D12 = torch.sum(X * torch.log(X / M), dim=2)
-        D21 = torch.sum(Y * torch.log(Y / M), dim=2)
-        return torch.sqrt(0.5 * (D12 + D21))
+    def normalize_(self, X: np.ndarray, reference: np.ndarray) -> np.ndarray:
+        return X
+
+    def adapt_(self, Xs: np.ndarray, Xt: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        weights_source = KMM(verbose=0).fit_weights(Xs, Xt)
+        weights_source = weights_source * len(weights_source) / np.sum(weights_source)
+        weights_target = np.ones(len(Xt))
+        return Xs, weights_source, weights_target
+
+    def name(self) -> str:
+        return 'Kernel mean matching'
