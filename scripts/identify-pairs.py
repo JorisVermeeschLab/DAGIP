@@ -38,31 +38,24 @@ RESULTS_FOLDER = os.path.join(ROOT, '..', 'results', 'pairs')
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
 
-"""
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     'dataset',
     type=str,
     choices=[
-        'OV-forward', 'OV-backward', 'NIPT-chemistry',
+        'OV-forward', 'NIPT-chemistry',
         'NIPT-lib', 'NIPT-adapter',
         'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000'
     ],
     help='Dataset name'
 )
-parser.add_argument(
-    'method',
-    type=str,
-    choices=['baseline', 'centering-scaling', 'dryclean', 'mapping-transport', 'da'],
-    help='Correction method'
-)
 args = parser.parse_args()
 
-METHOD = args.method
 DATASET = args.dataset
-"""
 
-def main(METHOD: str, DATASET: str, param) -> None:
+
+def main(METHOD: str, DATASET: str) -> None:
 
     # Load reference GC content
     df = pd.read_csv(os.path.join(DATA_FOLDER, 'gc-content-1000kb.csv'))
@@ -90,9 +83,6 @@ def main(METHOD: str, DATASET: str, param) -> None:
     bin_chr_names = bin_chr_names[mask]
     bin_starts = bin_starts[mask]
     bin_ends =  bin_ends[mask]
-
-    # GC-correction
-    X = gc_correction(X, gc_content)
 
     # Load sample pairs
     idx1, idx2, used = [], [], set()
@@ -124,6 +114,18 @@ def main(METHOD: str, DATASET: str, param) -> None:
     idx1 = np.asarray(idx1, dtype=int)
     idx2 = np.asarray(idx2, dtype=int)
 
+    # GC-correction
+    if METHOD == 'baseline-loess':
+        from dagip.tools.loess import loess
+        for i in list(idx1) + list(idx2):
+            X[i, :] /= loess(X[i, :], gc_content)
+    elif METHOD == 'baseline-polynomial':
+        for i in list(idx1) + list(idx2):
+            X[i, :] /= np.polyval(np.polyfit(gc_content, X[i, :], 5), gc_content)
+    if METHOD == 'baseline':
+        X[idx1] = gc_correction(X[idx1], gc_content)
+        X[idx2] = gc_correction(X[idx2], gc_content)
+
     print(f'Number of pairs: {len(idx1)}')
 
 
@@ -141,7 +143,7 @@ def main(METHOD: str, DATASET: str, param) -> None:
         X_adapted = np.copy(X)
         if METHOD == 'da':
             folder = os.path.join(ROOT, 'tmp', 'ot-da-tmp', DATASET)
-            kwargs = {'manifold': Positive(), 'aaa': param}
+            kwargs = {'manifold': Positive()}
             adapter = DomainAdapter(folder=folder, **kwargs)
             adapter.fit(X_adapted[idx1_train], X_adapted[idx2_train])
             X_adapted[idx1] = adapter.transform(X_adapted[idx1])
@@ -161,27 +163,7 @@ def main(METHOD: str, DATASET: str, param) -> None:
                 Xt=X_adapted[idx2_train, :]
             )
             X_adapted[idx1, :] = model.transform(Xs=X_adapted[idx1, :])
-        elif METHOD == 'ridge':
-            bias = X_adapted[idx1_train, :] - X_adapted[idx2_train, :]
-            model = MultiOutputRegressor(Ridge())
-            model.fit(X_adapted[idx1_train, :], bias)
-            bias_pred = model.predict(X_adapted[idx1])
-            X_adapted[idx1, :] -= bias_pred
-        elif METHOD == 'gbm-reg':
-            bias = X_adapted[idx1_train, :] - X_adapted[idx2_train, :]
-            bias = np.concatenate((bias, np.zeros_like(bias)), axis=0)
-            from sklearn.ensemble import RandomForestRegressor
-            model = RandomForestRegressor()
-            model.fit(X_adapted[np.concatenate((idx1_train, idx2_train), axis=0), :], bias)
-            bias_pred = model.predict(X_adapted[idx1])
-            X_adapted[idx1, :] -= bias_pred
-        elif METHOD == 'gbm':
-            bias = X_adapted[idx1_train, :] - X_adapted[idx2_train, :]
-            model = MultiOutputRegressor(lightgbm.LGBMRegressor(verbosity=-1, n_estimators=100, random_state=0xCAFE))
-            model.fit(X_adapted[idx1_train, :], bias)
-            bias_pred = model.predict(X_adapted[idx1])
-            X_adapted[idx1, :] -= bias_pred
-        elif METHOD == 'baseline':
+        elif METHOD in {'baseline', 'baseline-polynomial', 'baseline-loess', 'no-correction'}:
             X_adapted = X
         else:
             raise NotImplementedError(f'Unknown correction method "{METHOD}"')
@@ -232,9 +214,7 @@ def main(METHOD: str, DATASET: str, param) -> None:
         json.dump(results, f)
 
 
-DATASETS = ['OV-forward', 'NIPT-chemistry', 'NIPT-lib', 'NIPT-adapter', 'NIPT-hs2000', 'NIPT-hs2500', 'NIPT-hs4000']
-#METHODS = ['baseline', 'centering-scaling', 'mapping-transport', 'dryclean', 'ridge']
-METHODS = ['da']
+
+METHODS = ['baseline', 'centering-scaling', 'dryclean', 'mapping-transport', 'da']
 for method in METHODS:
-    for dataset in DATASETS:
-        main(method, dataset, param=param)
+    main(method, DATASET)

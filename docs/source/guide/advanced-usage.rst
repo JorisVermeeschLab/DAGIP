@@ -38,6 +38,21 @@ Let's take as example the multinomial manifold, namely the manifold of matrices 
 
 ``_transform`` projects the data from the Euclidean space to the given manifold, while ``_inverse_transform`` performs the reverse mapping, from the manifold to the Euclidean space. Let's note that in the given example, the logarithm is indeed the inverse of the softmax operation, since ``f^{-1}`` is called before ``f``, and ``X`` is assumed to have its rows summing to 1 beforehand. The assumption that ``X`` is already on the manifold can be exploited to easily implement otherwise non-invertible functions.
 
+Multimodal analysis
+-------------------
+
+In case multiple modalities are needed to be corrected jointly, constraints on the data can be defined using a ``MultimodalManifold``. For example, 4-mer end motif frequencies (256 possible motifs) and methylation ratios from 1500 differentially methylated regions (DMRs) can be constrained using the following manifold:
+
+.. code-block:: python
+
+    from dagip.retraction import *
+
+    manifold = MultimodalManifold()
+    manifold.add(256, ProbabilitySimplex())
+    manifold.add(1500, RatioManifold())
+
+Since the inputs ``X`` and ``Y`` to the algorithm should be NumPy arrays, data from all modalities should be concatenated into single arrays. In the given examples, the first 256 columns of ``X`` and ``Y`` correspond to end motif frequencies, while the rest correspond to methylation ratios.
+
 Custom distance metric
 ----------------------
 

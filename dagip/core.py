@@ -244,15 +244,15 @@ def _ot_da(
         manifold: Manifold = Identity(),
         distance: BaseDistance = SquaredEuclideanDistance(),
         u_test: Callable = default_u_test,
-        reg_rate: float = 0.002,  # 0.002
-        max_n_iter: int = 500,  # 500
-        convergence_threshold: Union[float, str] = 'auto',  # 'auto'
-        nn_n_hidden: Union[int, str] = 'auto',  # 'auto'
-        nn_n_layers: int = 2,  # 5
-        aaa = 1,
+        reg_rate: float = 0.002,
+        u_loss_weight: float = 0.001,
+        max_n_iter: int = 500,
+        convergence_threshold: Union[float, str] = 'auto',
+        nn_n_hidden: Union[int, str] = 'auto',
+        nn_n_layers: int = 2,
         lr: float = 0.005,
-        l2_reg: float = 2e-07,  # 2e-07
-        batch_size: int = 8,  # 4
+        l2_reg: float = 2e-07,
+        batch_size: int = 8,
         verbose: bool = True
 ) -> Tuple[np.ndarray, MLPAdapter]:
 
@@ -294,8 +294,6 @@ def _ot_da(
     X2 = torch.FloatTensor(X2)
 
     # Define subspace mapping
-    #subspace_mapping = DifferentiablePCA(aaa)
-    #subspace_mapping.fit(X2)
     subspace_mapping = lambda x: x
 
     with torch.no_grad():
@@ -356,7 +354,7 @@ def _ot_da(
             loss = torch.mean(torch.square(subspace_mapping(X1_second_batch) - transport_plan[idx]) * target_scale)
 
             # Univariate Wasserstein distances
-            loss = loss + 0.001 * torch.mean(univariate_wasserstein_distances(X1_second_batch * target_scale, X2 * target_scale))
+            loss = loss + u_loss_weight * torch.mean(univariate_wasserstein_distances(X1_second_batch * target_scale, X2 * target_scale))
 
             # Regularization function
             if reg_rate > 0:

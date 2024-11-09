@@ -68,7 +68,7 @@ Currently, the following manifolds are available:
 Coverage profiles
 -----------------
 
-To run the algorithm on coverage profiles, consider using the ``GIPManifold``. This manifold requires that the rows in ``X`` and ``Y`` have been GC-corrected already. To avoid introducing any discrepancy, prior GC-correction should be identical to the GC-correction performed by ``GIPManifold``: algorithm and hyper-parameters should be the same. To ensure this, consider using our implementation:
+To run the algorithm on coverage profiles, consider using the ``Positive`` or even the ``GIPManifold``. This manifold requires that the rows in ``X`` and ``Y`` have been GC-corrected already. To avoid introducing any discrepancy, prior GC-correction should be identical to the GC-correction performed by ``GIPManifold``: algorithm and hyper-parameters should be the same. To ensure this, consider using our implementation:
 
 .. code-block:: python
 
@@ -88,8 +88,18 @@ Then, the manifold should be specified:
 
     model = DomainAdapter(manifold=GIPManifold(gc_content, frac=0.3))
 
+Let's note that using the ``Positive`` manifold may be sufficient, as prior GC-correction can imply that the corrected coverage profiles remain decorrelated from GC content. If that is the case, consider using the ``Positive`` manifold to avoid additional computations and potential over-correction.
 
-Positive
+Saving and loading the adapter
+------------------------------
+
+.. code-block:: python
+
+    # Saving
+    model.save('/some/location.pt')
+
+    # Loading
+    model.load('/some/location.pt')
 
 Hyper-parameters
 ----------------
@@ -121,13 +131,15 @@ Hyper-parameter list:
 
 :folder: Folder where to store figures.
 :manifold: ``dagip.retraction.base.Manifold`` instance. Manifold used to add constraints on the data matrix. Please refer to :doc:`this section <advanced-usage>` for implementing custom manifolds.
-:pairwise_distances: ``dagip.spatial.base.BaseDistance`` instance. Used to define the cost matrix and solve the optimal transport problem. While Euclidean distance is relevant is many settings, we recommend using the ``dagip.spatial.euclidean_log.EuclideanDistanceOnLog`` for correcting cfDNA fragment length distributions, for example. Please refer to :doc:`this section <advanced-usage>` for implementing custom distance metrics.
-:u_test: Univariate statistical test which will be performed on each variable separately. Should be a function taking two arguments, ``x`` and ``y`` (both 1-dimensional NumPy arrays), and returns a p-value.
-:var_penalty: Penalty of the differences in total variance between :math:`\mathcal{X}` and :math:`Y`.
+:distance: ``dagip.spatial.base.BaseDistance`` instance. Used to define the cost matrix and solve the optimal transport problem. Please refer to :doc:`this section <advanced-usage>` for implementing custom distance metrics. Default: ``SquaredEuclideanDistance``.
+:u_test: Univariate statistical test which will be performed on each variable separately. Should be a function taking two arguments, ``x`` and ``y`` (both 1-dimensional NumPy arrays), and returns a p-value. Default: Two-sample Kolmogorov-Smirnov test.
 :reg_rate: Initial value of the regularization rate. A large value reduces the chances to introduce large changes in the data. If the two cohorts ``X`` and ``Y`` are expected to be perfectly superimposed after correction (for example if ``Y`` contains technical replicates of samples in ``X``), then ``reg_rate`` can be set to a low value instead.
+:u_loss_weight: Importance of the univariate Wasserstein distances in the total loss function. Increasing this value encourages the matching between medians and inter-quartile ranges.
 :max_n_iter: Maximum number of iterations of the algorithm.
 :convergence_threshold: Cutoff on the median of p-values computed with the ``u_test`` function. When the median p-value exceeds that threshold, the algorithm stops.
 :nn_n_hidden: Number of hidden neurons in each layer of the neural network model.
 :nn_n_layers: Number of layers in the neural network model.
 :lr: Learning rate used to update the parameters of the neural network model.
+:l2_reg: L2 regularization of the neural network parameters.
+:batch_size: Number of samples used to perform a forward pass during training of the neural netwwork. Can affect convergence speed and computation times.
 :verbose: Whether to print debugging information.

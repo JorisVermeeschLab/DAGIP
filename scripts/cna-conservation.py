@@ -17,6 +17,7 @@ from pycirclize import Circos
 from pycirclize.utils import load_eukaryote_example_dataset
 
 import ot.da
+from dagip.segmentation import SovRefine
 from dagip.core import ot_da, DomainAdapter
 from dagip.correction.gc import gc_correction
 from dagip.ichorcna.metrics import ploidy_accuracy, cna_accuracy, sign_accuracy, sov_refine, absolute_error
@@ -86,7 +87,6 @@ idx_d0 = np.asarray(list(set(np.where(d == 0)[0]).difference(idx_pairs)), dtype=
 idx_d1 = np.asarray(list(set(np.where(d == 1)[0]).difference(idx_pairs)), dtype=int)
 
 print(len(idx_y0d0), len(idx_y0d1), len(idx_y1d0), len(idx_y1d1))
-import sys; sys.exit(0)
 
 # GC-correction
 X = np.clip(X, 0, None)
@@ -192,6 +192,52 @@ results_0_0 = cna_calling('d0', 'd0', X[idx2_pairs, :], gc_codes[idx2_pairs], re
 results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', METHOD), X_adapted[idx1_pairs, :], gc_codes[idx1_pairs], reference_free=REFERENCE_FREE)
 
 
+def compute_differences(res1, res2):
+    sovs = np.asarray([SovRefine(x['copy-number'], y['copy-number']).sov_refine() for x, y in zip(res1, res2)])
+    cna1 = np.asarray([x['copy-number'] for x in res1])
+    cna2 = np.asarray([x['copy-number'] for x in res2])
+    log_r1 = np.asarray([x['log-r'] for x in res1], dtype=float)
+    log_r2 = np.asarray([x['log-r'] for x in res2], dtype=float)
+    fractions1 = np.asarray([x['tumor-fraction'] for x in res1], dtype=float)
+    fractions2 = np.asarray([x['tumor-fraction'] for x in res2], dtype=float)
+    ploidy1 = np.asarray([x['tumor-ploidy'] for x in res1], dtype=float)
+    ploidy2 = np.asarray([x['tumor-ploidy'] for x in res2], dtype=float)
+    prevalence1 = np.asarray([x['tumor-cellular-prevalence'] for x in res1], dtype=float)
+    prevalence2 = np.asarray([x['tumor-cellular-prevalence'] for x in res2], dtype=float)
+    mask = ~np.logical_or(np.isnan(prevalence1), np.isnan(prevalence2))
+    prevalence1, prevalence2 = prevalence1[mask], prevalence2[mask]
+    subclonal1 = np.asarray([x['proportion-subclonal-cnas'] for x in res1], dtype=float)
+    subclonal2 = np.asarray([x['proportion-subclonal-cnas'] for x in res2], dtype=float)
+    mask = ~np.logical_or(np.isnan(subclonal1), np.isnan(subclonal2))
+    subclonal1, subclonal2 = subclonal1[mask], subclonal2[mask]
+    return {
+        'cna': np.mean(cna1 == cna2, axis=1),
+        'cna-sign': np.mean(np.sign(cna1) == np.sign(cna2), axis=1),
+        'SOV_REFINE': sovs,
+        'log-r': np.mean(np.abs(log_r1 - log_r2), axis=1),
+        'tf': np.abs(fractions1 - fractions2),
+        'ploidy': np.abs(ploidy1 - ploidy2),
+        'prevalence': np.abs(prevalence1 - prevalence2),
+        'subclonal': np.abs(subclonal1 - subclonal2)
+    }
+
+
+def compute_metrics_signifiance(res1, res2, res1_baseline, res2_baseline):
+    res = compute_differences(res1, res2)
+    res_baseline = compute_differences(res1_baseline, res2_baseline)
+
+    return {
+        'Accuracy (ploidy)': scipy.stats.ttest_rel(res['cna'], res_baseline['cna'], alternative='less').pvalue,
+        'Accuracy (ploidy sign)': scipy.stats.ttest_rel(res['cna-sign'], res_baseline['cna-sign'], alternative='less').pvalue,
+        'SOV_REFINE': scipy.stats.ttest_rel(res['SOV_REFINE'], res_baseline['SOV_REFINE'], alternative='less').pvalue,
+        'Log-ratios': scipy.stats.ttest_rel(res['log-r'], res_baseline['log-r'], alternative='greater').pvalue,
+        'Tumor fraction': scipy.stats.ttest_rel(res['tf'], res_baseline['tf'], alternative='greater').pvalue,
+        'Tumor ploidy': scipy.stats.ttest_rel(res['ploidy'], res_baseline['ploidy'], alternative='greater').pvalue,
+        'Cellular prevalence': scipy.stats.ttest_ind(res['prevalence'], res_baseline['prevalence'], alternative='greater').pvalue,
+        'Proportion of subclonal CNAs': scipy.stats.ttest_ind(res['subclonal'], res_baseline['subclonal'], alternative='greater').pvalue,
+    }
+
+
 def compute_metrics(res1, res2):
 
     cna1 = [x['copy-number'] for x in res1]
@@ -215,7 +261,7 @@ def compute_metrics(res1, res2):
 
     metrics = {
         'Accuracy (ploidy)': np.mean(ploidy_accuracy(cna1, cna2)),
-        'Accuracy (poildy sign)': np.mean(sign_accuracy(cna1, cna2)),
+        'Accuracy (ploidy sign)': np.mean(sign_accuracy(cna1, cna2)),
         'SOV_REFINE': np.mean(sov_refine(cna1, cna2)),
         'r2 (Log ratios)': r2_score(log_r1.flatten(), log_r2.flatten()),
         'r2 (tumor fractions)': r2_score(fractions1.flatten(), fractions2.flatten()),
@@ -300,17 +346,17 @@ plt.savefig(os.path.join(FIGURES_FOLDER, 'tf.png'), dpi=400)
 #plt.show()
 
 
-plt.figure(figsize=(12, 5))
+plt.figure(figsize=(12, 12))
 for k in range(2):
 
-    ax = plt.subplot(1, 2, k + 1)
+    ax = plt.subplot(2, 2, k + 1)
 
     COLUMNS = ['Accuracy (copy number)', 'Accuracy (copy number sign)', 'SOV_REFINE', r'$R^2$ (log-ratios)', r'$R^2$ (tumor fractions)', r'$R^2$ (tumor ploidy)', r'$R^2$ (cellular prevalence)', r'$R^2$ (proportion of subclonal CNAs)', 'Average']
-    #METHODS = ['baseline', 'centering-scaling', 'mapping-transport', 'dryclean', 'dagip']
-    METHODS = ['dagip']
+    METHODS = ['baseline', 'centering-scaling', 'mapping-transport', 'dryclean', 'dagip']
+    #METHODS = ['dagip']
     data = []
     for method in METHODS:
-        reference_free = True
+        reference_free = False
         results_1_1 = cna_calling('d1', 'd1', None, gc_codes[idx1_pairs], reference_free=reference_free)
         results_1a_1a = cna_calling(os.path.join('d1-adapted', method), os.path.join('d1-adapted', 'd1-controls', method), None, gc_codes[idx1_pairs], reference_free=reference_free)
         results_0_0 = cna_calling('d0', 'd0', None, gc_codes[idx2_pairs], reference_free=reference_free)
@@ -339,8 +385,49 @@ for k in range(2):
         df, annot=annot, fmt='.3f', ax=ax, yticklabels=(k == 0),
         cbar=False, linewidths=2, linecolor='white'
     )
+
+
+    COLUMNS = ['Accuracy (copy number)', 'Accuracy (copy number sign)', 'SOV_REFINE', r'$R^2$ (log-ratios)', r'$R^2$ (tumor fractions)', r'$R^2$ (tumor ploidy)', r'$R^2$ (cellular prevalence)', r'$R^2$ (proportion of subclonal CNAs)']
+    results_1a_1a_baseline = cna_calling(os.path.join('d1-adapted', 'dagip'), os.path.join('d1-adapted', 'd1-controls', 'dagip'), None, gc_codes[idx1_pairs], reference_free=reference_free)
+    results_0_1a_baseline = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', 'dagip'), None, gc_codes[idx1_pairs], reference_free=reference_free)
+
+    ax = plt.subplot(2, 2, k + 3)
+
+    data = []
+    for method in METHODS:
+        reference_free = False
+        results_1_1 = cna_calling('d1', 'd1', None, gc_codes[idx1_pairs], reference_free=reference_free)
+        results_1a_1a = cna_calling(os.path.join('d1-adapted', method), os.path.join('d1-adapted', 'd1-controls', method), None, gc_codes[idx1_pairs], reference_free=reference_free)
+        results_0_0 = cna_calling('d0', 'd0', None, gc_codes[idx2_pairs], reference_free=reference_free)
+        results_0_1a = cna_calling('d0', os.path.join('d1-adapted', 'd0-controls', method), None, gc_codes[idx1_pairs], reference_free=reference_free)
+        p_values_1_1 = np.asarray(list(compute_metrics_signifiance(results_1_1, results_1a_1a, results_1_1, results_1a_1a_baseline).values()))
+        p_values_0_0 = np.asarray(list(compute_metrics_signifiance(results_0_0, results_0_1a, results_0_0, results_0_1a_baseline).values()))
+        if method == 'dagip':
+            p_values_1_1[:] = np.nan
+            p_values_0_0[:] = np.nan
+
+
+        if k == 0:
+            data.append(p_values_1_1)
+            ax.set_title('Intra-domain consistency\nSignificance of improvement of DAGIP\nover each method (t-test p-value)')
+        else:
+            data.append(p_values_0_0)
+            ax.set_title('Cross-domain consistency\nSignificance of improvement of DAGIP\nover each method (t-test p-value)')
+    data = np.asarray(data)
+
+    df = pd.DataFrame(
+        np.clip(data.T, 0, None),
+        index=COLUMNS,
+        columns=[PRETTY_NAMES[method] for method in METHODS]
+    )
+    seaborn.heatmap(
+        df, annot=True, fmt='.3f', ax=ax, yticklabels=(k == 0),
+        cbar=False, linewidths=2, linecolor='white', cmap='viridis_r'
+    )
+
+
 plt.tight_layout()
-plt.savefig(os.path.join(FIGURES_FOLDER, 'ichorcna-noref-heatmaps.png'), dpi=400)
+plt.savefig(os.path.join(FIGURES_FOLDER, 'ichorcna-heatmaps.png'), dpi=400)
 plt.show()
 
 

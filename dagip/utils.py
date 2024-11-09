@@ -32,22 +32,13 @@ def log_(message: str, verbose: bool = True):
 
 class LaTeXTable:
 
-    def __init__(self, avg: bool = True):
-        self.avg: bool = avg
+    def __init__(self):
         self.results = []
 
     def add(self, model_name: str, res: Dict[str, dict]):
         self.results.append((model_name, res))
 
     def __str__(self) -> str:
-
-        pretty_names = {
-            'baseline': 'No correction',
-            'center-and-scale': 'Center-and-scale',
-            'gc-correction': 'GC-correction',
-            'ot-without-gc-correction': 'DA (no GC-correction)',
-            'ot': 'DA'
-        }
 
         s = ''
 
@@ -58,45 +49,16 @@ class LaTeXTable:
         s += ' \\\\\n'
 
         for model_name, res in self.results:
-            print(model_name, res.keys())
-            if model_name in pretty_names:
-                model_name = pretty_names[model_name]
             s += f'{model_name: <20}'
-            if self.avg:
-                f = lambda x: f'{x:.3f}'.replace('0.', '.')
-                for key in ['sensitivity-best', 'specificity-best', 'mcc-best', 'auroc', 'aupr']:
-                    values = []
-                    for k in ['svm']:
-                        print(key, res[k].keys())
-                        if key in res[k]:
-                            values.append(res[k][key])
-                        else:
-                            values.append([])
-                    values = np.mean(values, axis=0)
-                    confint = sms.DescrStatsW(values).tconfint_mean()
-                    mean = np.mean(values)
-                    #s += f' & {f(mean)} ({f(confint[0])}, {f(confint[1])})'
-                    s += f' & {f(mean) : <12}'
+            f = lambda x: f'{x:.3f}'.replace('0.', '.')
+            for k in ['reglog', 'rf', 'svm']:
 
-            else:
-                f = lambda x: f'{(int(round(1000 * x)) * 0.1):.1f}'
-                for k in ['reglog', 'rf', 'svm']:
-                    sensitivity = f(res[k]['sensitivity-best-mean'])
-                    if res[k]['sensitivity-best-mean'] >= max_values[(k, 'sensitivity-best-mean')]:
-                        sensitivity = f'\\textbf{{{sensitivity}}}'
-                    specificity = f(res[k]['specificity-best-mean'])
-                    if res[k]['specificity-best-mean'] >= max_values[(k, 'specificity-best-mean')]:
-                        specificity = f'\\textbf{{{specificity}}}'
-                    mcc = f(res[k]['mcc-best-mean'])
-                    if res[k]['mcc-best-mean'] >= max_values[(k, 'mcc-best-mean')]:
-                        mcc = f'\\textbf{{{mcc}}}'
-                    auroc = f(res[k]['auroc-mean'])
-                    if res[k]['auroc-mean'] >= max_values[(k, 'auroc-mean')]:
-                        auroc = f'\\textbf{{{auroc}}}'
-                    aupr = f(res[k]['aupr-mean'])
-                    if res[k]['aupr-mean'] >= max_values[(k, 'aupr-mean')]:
-                        aupr = f'\\textbf{{{aupr}}}'
-                    s += f' & {sensitivity} \\% & {specificity} \\% & {mcc} \\% & {auroc} \\% & {aupr} \\%'
+                values = []
+                for metric in ['sensitivity', 'specificity', 'mcc', 'auroc', 'aupr']:
+                    value = np.mean([x[metric] for x in res[k]])
+                    value_str = f(value)
+                    values.append(value_str)
+                s += f' & ' + ' & '.join(values)
             s += ' \\\\\n'
 
         return s

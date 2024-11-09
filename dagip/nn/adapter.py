@@ -74,7 +74,6 @@ class MLPAdapter(torch.nn.Module):
         self.shape = tuple([self.m] + list(latent_shape) + [self.m])
         self.manifold: Manifold = manifold
         self.is_constant: torch.BoolTensor = torch.BoolTensor(np.zeros(self.m, dtype=bool))
-        #self.register_buffer('is_constant', self.is_constant)
 
         layers = [torch.nn.LayerNorm(self.shape[0])]
         for k in range(len(self.shape) - 1):
@@ -131,3 +130,14 @@ class MLPAdapter(torch.nn.Module):
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 m.bias.data.fill_(0.001)
+
+    def save(self, filepath: str) -> None:
+        torch.save({
+            'model_state_dict': self.state_dict(),
+            'constant_mask': self.is_constant
+        }, filepath)
+
+    def load(self, filepath: str) -> None:
+        checkpoint = torch.load(filepath)
+        self.load_state_dict(checkpoint['model_state_dict'])
+        self.is_constant = checkpoint['constant_mask']

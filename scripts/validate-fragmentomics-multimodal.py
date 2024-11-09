@@ -103,11 +103,11 @@ X = np.concatenate(Xs, axis=1)
 
 
 METHODS = [
-    #(BaselineMethod(), 'baseline'),
-    #(CenteringScaling(), 'center-and-scale'),
-    #(KernelMeanMatching(), 'kmm'),
-    #(MappingTransport(), 'mapping-transport'),
-    (OTDomainAdaptation(manifold, SquaredEuclideanDistance(), 'tmp'), 'da'),
+    (BaselineMethod(), 'baseline'),
+    (CenteringScaling(), 'center-and-scale'),
+    (KernelMeanMatching(), 'kmm'),
+    (MappingTransport(), 'mapping-transport'),
+    #(OTDomainAdaptation(manifold, SquaredEuclideanDistance(), 'tmp'), 'da'),
 ]
 
 for method, method_name in METHODS:
