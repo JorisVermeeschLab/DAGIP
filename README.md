@@ -1,5 +1,7 @@
 # DAGIP: A bias correction algorithm for cell-free DNA data
 
+![Zenodo doi badge](https://zenodo.org/badge/DOI/10.5281/zenodo.14503340.svg)
+
 Given two groups of matched (preferentially paired) samples sequenced under different protocols, the tool explicitly learns the bias using a neural network. The approach builds on Optimal Transport theory, and exploits sample-to-sample similarities to define how to perform bias correction.
 
 Documentations are available at [jorisvermeeschlab.github.io/DAGIP/](https://jorisvermeeschlab.github.io/DAGIP/)
